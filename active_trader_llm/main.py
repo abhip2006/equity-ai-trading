@@ -32,6 +32,7 @@ from risk.risk_manager import RiskManager, PortfolioState
 from memory.memory_manager import MemoryManager, TradeMemory
 from learning.strategy_monitor import StrategyMonitor
 from utils.logging_json import JSONLogger
+from scanning.market_scanner import MarketScanner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,6 +69,16 @@ class ActiveTraderLLM:
             indicator_config=indicator_config,
             regime_config=regime_config
         )
+
+        # Initialize market scanner (if enabled)
+        if hasattr(self.config, 'scanner') and self.config.scanner.enabled:
+            from scanning.market_scanner import ScannerConfig
+            scanner_config = ScannerConfig(**self.config.scanner.dict())
+            self.scanner = MarketScanner(scanner_config)
+            logger.info(f"Market scanner enabled: base_universe={scanner_config.base_universe}, max_size={scanner_config.max_universe_size}")
+        else:
+            self.scanner = None
+            logger.info("Market scanner disabled, using static universe")
 
         # Initialize analysts
         api_key = self.config.llm.api_key
@@ -143,10 +154,22 @@ class ActiveTraderLLM:
         logger.info("=" * 80)
 
         try:
-            # Step 1: Fetch data
-            logger.info("Step 1: Fetching market data...")
+            # Step 1: Determine universe (scanner or static)
+            if self.scanner:
+                logger.info("Step 1a: Running market scanner...")
+                universe = self.scanner.get_tradable_universe()
+                logger.info(f"Scanner found {len(universe)} tradable symbols")
+                if len(universe) == 0:
+                    logger.warning("Scanner returned empty universe. Aborting cycle.")
+                    return
+            else:
+                universe = self.config.data_sources.universe
+                logger.info(f"Using static universe: {len(universe)} symbols")
+
+            # Step 1b: Fetch data
+            logger.info("Step 1b: Fetching market data...")
             price_df = self.ingestor.fetch_prices(
-                universe=self.config.data_sources.universe,
+                universe=universe,
                 interval=self.config.data_sources.interval,
                 lookback_days=self.config.data_sources.lookback_days,
                 use_cache=self.config.cost_control.cache_data

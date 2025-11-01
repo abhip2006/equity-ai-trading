@@ -13,6 +13,200 @@ The ActiveTrader-LLM system is a multi-agent trading system that makes decisions
 
 ---
 
+## Phase 0: Market Scanner (Optional - Dynamic Universe Discovery)
+**Duration: 10-60 seconds (runs once per scan_interval, default: 24 hours)**
+
+### NEW: Dynamic Stock Scanner
+
+**Component:** `MarketScanner` (enabled via `scanner.enabled: true` in config)
+
+**Purpose:** Automatically discovers liquid, tradable stocks that meet volume, price, and volatility criteria instead of using a static, hardcoded symbol list.
+
+### How It Works
+
+**When Scanner is ENABLED:**
+1. Fetches base universe (S&P 500, NASDAQ-100, or custom list)
+2. Downloads recent price/volume data for all candidates
+3. Filters based on liquidity, price range, volatility
+4. Sorts by dollar volume (highest liquidity first)
+5. Limits to `max_universe_size` (default: 50 symbols)
+6. Caches results for `cache_expiry_hours` (default: 24h)
+
+**When Scanner is DISABLED:**
+- Uses static `data_sources.universe` from config file
+- Default: `[AAPL, MSFT, SPY, QQQ]`
+
+### Scanning Process Breakdown
+
+**Step 0.1: Fetch Base Universe** (5-10 seconds)
+```
+Source: Wikipedia S&P 500 constituent list OR NASDAQ-100 list
+Method: pd.read_html() to scrape current constituents
+Timing: ~5-10 seconds (one-time per scan)
+```
+
+Base universe options:
+- `sp500` - ~500 large-cap stocks
+- `nasdaq100` - ~100 tech-focused stocks
+- `sp400` - S&P MidCap 400 (not yet implemented)
+- `sp600` - S&P SmallCap 600 (not yet implemented)
+- `custom` - User-defined list
+
+**Step 0.2: Scan & Filter Symbols** (30-60 seconds for 500 symbols)
+```
+Component: MarketScanner._scan_and_filter()
+Data Source: yfinance (fetches 20-day history per symbol)
+Processing: ~100-200ms per symbol
+```
+
+**Filters applied (all configurable):**
+
+1. **Volume filters (liquidity)**
+   - `min_avg_volume: 1M` shares/day (20-day average)
+   - `min_dollar_volume: $10M`/day (price × volume)
+   - Ensures liquid stocks you can easily enter/exit
+
+2. **Price filters**
+   - `min_price: $5.00` (avoid penny stocks)
+   - `max_price: $1000` (avoid extremely expensive stocks)
+   - Configurable based on account size
+
+3. **Market cap filter** (optional)
+   - `min_market_cap: null` (disabled by default)
+   - Example: Set to `$1B` to only trade large caps
+
+4. **Volatility filters** (optional, for day traders)
+   - `min_atr_pct: null` (disabled by default)
+   - Example: `0.02` (2%+) for day trading opportunities
+   - `max_atr_pct: null` (avoid extreme volatility)
+   - Example: `0.10` (10%) to exclude highly volatile stocks
+
+**Step 0.3: Rank & Limit** (1 second)
+```
+Sorting: By dollar volume (highest first)
+Limit: max_universe_size (default: 50)
+Cost Control: Prevents analyzing too many symbols
+```
+
+### Scanner Timing Examples
+
+**S&P 500 scan (first time, no cache):**
+- Fetch constituent list: 5-10 seconds
+- Scan 500 symbols @ 150ms each: ~75 seconds
+- Filter and rank: 1 second
+- **Total: ~80-90 seconds**
+
+**S&P 500 scan (with cache):**
+- Load from cache: <1 second
+- **Total: <1 second**
+
+**Custom scan (10 symbols, no cache):**
+- Scan 10 symbols @ 150ms each: ~1.5 seconds
+- Filter and rank: <1 second
+- **Total: ~2-3 seconds**
+
+### Scanner Configuration Profiles
+
+**Day Trading Profile** (high volume, high volatility):
+```yaml
+scanner:
+  base_universe: sp500
+  min_avg_volume: 5000000        # 5M shares/day
+  min_dollar_volume: 50000000    # $50M/day
+  min_price: 10.0
+  max_price: 500.0
+  min_atr_pct: 0.02              # 2%+ daily volatility
+  max_universe_size: 30
+```
+Expected universe: 20-30 highly liquid, volatile stocks (AAPL, NVDA, TSLA, AMD, etc.)
+
+**Swing Trading Profile** (moderate volume, all sectors):
+```yaml
+scanner:
+  base_universe: sp500
+  min_avg_volume: 1000000        # 1M shares/day
+  min_dollar_volume: 10000000    # $10M/day
+  min_price: 5.0
+  max_price: 1000.0
+  max_universe_size: 50
+```
+Expected universe: 40-50 liquid stocks across all sectors
+
+**Blue Chip Profile** (large cap only):
+```yaml
+scanner:
+  base_universe: sp500
+  min_avg_volume: 2000000
+  min_dollar_volume: 50000000
+  min_market_cap: 10000000000    # $10B+ market cap
+  max_universe_size: 20
+```
+Expected universe: 15-20 mega-cap stocks (AAPL, MSFT, GOOGL, AMZN, etc.)
+
+### Scanner Cache Behavior
+
+**Cache key:** `{base_universe}_{min_avg_volume}`
+
+**Cache expiry:** 24 hours (configurable via `cache_expiry_hours`)
+
+**When cache is used:**
+- Second and subsequent decision cycles within 24 hours
+- Saves 80-90 seconds per cycle
+
+**When cache is refreshed:**
+- After 24 hours
+- Or if scanner configuration changes
+- Or if `use_cache: false`
+
+**Recommendation:** Keep cache enabled in production to reduce API calls and improve performance
+
+### Cost Impact
+
+**yfinance API calls (free, rate-limited):**
+- S&P 500 scan: ~500 API calls (one per symbol)
+- Rate limit: ~2000 requests/hour
+- Cost: $0 (free API)
+
+**Recommended scan frequency:**
+- Daily scans: `scan_interval_hours: 24` (default)
+- Avoids excessive API calls
+- Universe doesn't change much intraday
+
+### Scanner vs Static Universe
+
+| Aspect | Scanner (Dynamic) | Static Universe |
+|--------|------------------|-----------------|
+| **Setup time** | 80-90 sec (first scan) | 0 seconds |
+| **Setup time (cached)** | <1 second | 0 seconds |
+| **Universe changes** | Adapts to market conditions | Fixed |
+| **Volume filtering** | Automatic | Manual |
+| **Opportunity discovery** | Finds new setups | Limited to config |
+| **Configuration** | Complex (9 parameters) | Simple (1 list) |
+| **Best for** | Production trading | Backtesting, research |
+
+### Integration with Decision Cycle
+
+```
+Decision Cycle Start
+├─ Step 0: Scanner (if enabled)
+│   ├─ Check cache (expires every 24h)
+│   ├─ If cached: Load universe (<1s)
+│   └─ If not cached: Run scan (80-90s)
+│       ├─ Fetch base universe (5-10s)
+│       ├─ Scan & filter (30-60s)
+│       └─ Rank & limit (1s)
+│
+├─ Step 1: Data Ingestion
+│   └─ Fetch prices for scanner-selected universe
+│
+├─ Step 2: Feature Engineering...
+└─ ... (rest of decision cycle)
+```
+
+**Key insight:** Scanner runs BEFORE data ingestion, so the rest of the cycle uses the filtered, liquid universe.
+
+---
+
 ## Phase 1: Data Ingestion & Feature Engineering
 **Duration: 3-5 seconds per symbol**
 

@@ -49,10 +49,44 @@ class MacroThresholds(BaseModel):
     vix_risk_on: float = 12.0   # VIX below this = risk-on
 
 
+class ScannerConfig(BaseModel):
+    """Market scanner configuration for dynamic universe discovery"""
+    enabled: bool = True
+
+    # Base universe to scan
+    base_universe: Literal["sp500", "sp400", "sp600", "nasdaq100", "custom"] = "sp500"
+    custom_tickers: List[str] = []  # Used if base_universe = "custom"
+
+    # Volume filters
+    min_avg_volume: int = 1_000_000  # Minimum 20-day average volume
+    min_dollar_volume: float = 10_000_000  # Minimum daily dollar volume ($10M)
+
+    # Price filters
+    min_price: float = 5.0  # Avoid penny stocks
+    max_price: float = 1000.0  # Avoid extremely expensive stocks
+
+    # Market cap filter (optional)
+    min_market_cap: Optional[float] = None  # e.g., 1_000_000_000 for $1B+
+
+    # Volatility filter (optional)
+    min_atr_pct: Optional[float] = None  # e.g., 0.02 for 2%+ daily ATR
+    max_atr_pct: Optional[float] = None  # e.g., 0.10 for <10% daily ATR
+
+    # Universe size limits
+    max_universe_size: int = 50  # Maximum symbols to analyze (cost control)
+
+    # Scan frequency
+    scan_interval_hours: int = 24  # Re-scan daily by default
+
+    # Cache settings
+    use_cache: bool = True
+    cache_expiry_hours: int = 24
+
+
 class DataSourcesConfig(BaseModel):
     prices: str = "yfinance"
     interval: str = "1h"
-    universe: List[str] = ["AAPL", "MSFT", "SPY", "QQQ"]
+    universe: List[str] = ["AAPL", "MSFT", "SPY", "QQQ"]  # Used if scanner disabled
     lookback_days: int = 90
 
 
@@ -113,6 +147,9 @@ class Config(BaseModel):
     indicators: IndicatorConfig = Field(default_factory=IndicatorConfig)
     regime_thresholds: RegimeThresholds = Field(default_factory=RegimeThresholds)
     macro_thresholds: MacroThresholds = Field(default_factory=MacroThresholds)
+
+    # Market scanning
+    scanner: ScannerConfig = Field(default_factory=ScannerConfig)
 
     # Data and execution
     data_sources: DataSourcesConfig = Field(default_factory=DataSourcesConfig)

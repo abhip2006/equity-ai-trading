@@ -52,13 +52,66 @@ macro_thresholds:
   vix_risk_on: 12.0   # VIX below this = risk-on bias
 
 # ==========================================
+# MARKET SCANNER (Dynamic Universe Discovery)
+# ==========================================
+# The scanner automatically finds liquid, tradable stocks that meet your criteria.
+# When enabled, it overrides the static universe in data_sources.
+#
+# Base Universe Options:
+#   - sp500: Scan S&P 500 constituents (~500 large caps)
+#   - nasdaq100: Scan NASDAQ-100 constituents (~100 tech-focused)
+#   - sp400: S&P MidCap 400 (not yet implemented)
+#   - sp600: S&P SmallCap 600 (not yet implemented)
+#   - custom: Use custom_tickers list
+#
+# Scanner Profiles:
+#   - Day Trading: min_avg_volume: 2M, min_dollar_volume: 20M, min_atr_pct: 0.015 (1.5%)
+#   - Swing Trading: min_avg_volume: 1M, min_dollar_volume: 10M, min_atr_pct: None  ← Current
+#   - Blue Chip Only: min_market_cap: 10B, max_universe_size: 20
+#   - High Volatility: min_atr_pct: 0.03, max_atr_pct: 0.15
+
+scanner:
+  enabled: true                      # Enable dynamic scanning (if false, uses data_sources.universe)
+
+  # Base universe
+  base_universe: sp500               # sp500 | nasdaq100 | sp400 | sp600 | custom
+  custom_tickers: []                 # Only used if base_universe = custom
+
+  # Volume filters (liquidity requirements)
+  min_avg_volume: 1000000           # Min 1M shares/day average (20-day)
+  min_dollar_volume: 10000000       # Min $10M/day traded ($10M = 1M shares × $10)
+
+  # Price filters (avoid penny stocks and extremely expensive stocks)
+  min_price: 5.0                    # Min $5 per share
+  max_price: 1000.0                 # Max $1000 per share
+
+  # Market cap filter (optional, null = disabled)
+  min_market_cap: null              # e.g., 1000000000 for $1B+ market cap
+
+  # Volatility filters (optional, null = disabled)
+  min_atr_pct: null                 # e.g., 0.02 for 2%+ daily ATR (for day trading)
+  max_atr_pct: null                 # e.g., 0.10 for <10% daily ATR (avoid extreme volatility)
+
+  # Universe size limits (cost control)
+  max_universe_size: 50             # Max 50 symbols to analyze (controls LLM costs)
+
+  # Scan frequency
+  scan_interval_hours: 24           # Re-scan every 24 hours (daily)
+
+  # Cache settings (speeds up repeated scans)
+  use_cache: true                   # Cache scan results
+  cache_expiry_hours: 24            # Cache expires after 24 hours
+
+# ==========================================
 # DATA SOURCES
 # ==========================================
+# Note: If scanner.enabled = true, the universe list below is IGNORED
+# and the scanner dynamically populates the universe instead.
 
 data_sources:
   prices: yfinance
   interval: 1h  # 1m, 5m, 15m, 1h, 1d
-  universe:
+  universe:                         # Only used if scanner.enabled = false
     - AAPL
     - MSFT
     - GOOGL
