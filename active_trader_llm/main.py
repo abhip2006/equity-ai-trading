@@ -21,7 +21,7 @@ import uuid
 
 from config.loader import load_config
 from data_ingestion.price_volume_ingestor import PriceVolumeIngestor
-from feature_engineering.indicators import FeatureEngineer
+from feature_engineering.feature_builder import FeatureBuilder
 from analysts.technical_analyst import TechnicalAnalyst
 from analysts.breadth_health_analyst import BreadthHealthAnalyst
 from analysts.sentiment_analyst import SentimentAnalyst
@@ -60,7 +60,7 @@ class ActiveTraderLLM:
 
         # Initialize components
         self.ingestor = PriceVolumeIngestor(cache_db_path="data/price_cache.db")
-        self.feature_engineer = FeatureEngineer()
+        self.feature_builder = FeatureBuilder(self.config.dict())
 
         # Initialize analysts
         api_key = self.config.llm.api_key
@@ -135,13 +135,13 @@ class ActiveTraderLLM:
 
             # Step 2: Compute features
             logger.info("Step 2: Computing technical features...")
-            features_dict = self.feature_engineer.build_features(price_df)
+            features_dict = self.feature_builder.build_features(price_df)
 
             if not features_dict:
                 logger.error("No features computed. Aborting cycle.")
                 return
 
-            market_snapshot = self.feature_engineer.compute_breadth_features(price_df, features_dict)
+            market_snapshot = self.feature_builder.build_market_snapshot(price_df, features_dict)
             logger.info(f"Market regime: {market_snapshot.regime_hint} (breadth: {market_snapshot.breadth_score:.2f})")
 
             # Step 3: Run analysts

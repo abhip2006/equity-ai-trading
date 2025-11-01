@@ -14,6 +14,88 @@ data_sources:
     - QQQ
   lookback_days: 90
 
+# Technical Indicators Configuration
+technical_indicators:
+  # Data quality requirements
+  quality:
+    min_bars_required: 250        # Need 50 weeks minimum (50w * 5d = 250d)
+    reject_incomplete: true        # Exclude symbols with any NaN
+
+  # Daily timeframe indicators
+  daily:
+    ema_5:
+      enabled: true
+      period: 5
+    ema_10:
+      enabled: true
+      period: 10
+    ema_20:
+      enabled: true
+      period: 20
+    sma_50:
+      enabled: true
+      period: 50
+    sma_200:
+      enabled: true
+      period: 200
+    rsi:
+      enabled: true
+      period: 14
+    atr:
+      enabled: true
+      period: 14
+
+  # Weekly timeframe indicators (converted from daily data)
+  weekly:
+    ema_10:
+      enabled: true
+      period: 10              # 10 weeks
+      conversion: 50          # 10 weeks * 5 trading days
+    sma_21:
+      enabled: true
+      period: 21              # 21 weeks
+      conversion: 105         # 21 weeks * 5 trading days
+    sma_30:
+      enabled: true
+      period: 30              # 30 weeks
+      conversion: 150         # 30 weeks * 5 trading days
+    sma_50:
+      enabled: true
+      period: 50              # 50 weeks
+      conversion: 250         # 50 weeks * 5 trading days
+
+# Market Breadth Configuration
+market_breadth:
+  enabled: true
+
+  new_highs_lows:
+    lookback_days: 252            # ~1 year
+    min_data_bars: 20
+    high_threshold_pct: 0.98      # Within 2% of high
+    low_threshold_pct: 1.02       # Within 2% of low
+
+  regime_thresholds:
+    risk_off_breadth: -0.5
+    risk_off_rsi: 35
+    trending_bull_breadth: 0.5
+    trending_bull_pct_above_ema200: 0.6  # Daily SMA 200
+    trending_bear_breadth: -0.3
+
+# Two-stage market scanner
+scanner:
+  enabled: false  # Set to true to use scanner mode instead of fixed universe
+  universe_source: alpaca_optionable  # alpaca_optionable | tradable_universe_cache | custom
+  alpaca_api_url: ${ALPACA_BASE_URL}  # Use environment variable
+  refresh_universe_hours: 24  # How often to refresh universe cache
+  stage1:
+    enabled: true
+    target_candidate_count: 100  # Target number of candidates for Stage 2
+    market_summary_sectors: 11  # Number of sectors to include in market summary
+  stage2:
+    batch_size: 15  # Stocks per LLM call in deep analysis
+    max_batches: 10  # Max batches to process (prevents runaway costs)
+    max_candidates: 150  # Max candidates to analyze in Stage 2
+
 # Risk parameters
 risk_parameters:
   max_position_pct: 0.05  # 5% max per position
