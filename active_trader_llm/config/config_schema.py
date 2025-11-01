@@ -55,17 +55,46 @@ class LLMConfig(BaseModel):
     max_tokens: int = 2000
 
 
+class Stage1Config(BaseModel):
+    """Stage 1: Market-wide summary configuration"""
+    enabled: bool = True
+    target_candidate_count: int = 100
+    market_summary_sectors: int = 11
+
+
+class Stage2Config(BaseModel):
+    """Stage 2: Deep analysis configuration"""
+    batch_size: int = 15
+    max_batches: int = 10
+    max_candidates: int = 150
+
+
+class ScannerConfig(BaseModel):
+    """Two-stage market scanner configuration"""
+    enabled: bool = False
+    universe_source: Literal["alpaca_optionable", "tradable_universe_cache", "custom"] = "alpaca_optionable"
+    alpaca_api_url: Optional[str] = None
+    refresh_universe_hours: int = 24
+    stage1: Stage1Config = Field(default_factory=Stage1Config)
+    stage2: Stage2Config = Field(default_factory=Stage2Config)
+
+
 class Config(BaseModel):
     """Main configuration for ActiveTrader-LLM"""
 
     mode: Literal["backtest", "paper-live"] = "backtest"
     data_sources: DataSourcesConfig = Field(default_factory=DataSourcesConfig)
+    scanner: ScannerConfig = Field(default_factory=ScannerConfig)
     risk_parameters: RiskParameters = Field(default_factory=RiskParameters)
     strategies: List[StrategyConfig] = Field(default_factory=list)
     strategy_switching: StrategySwitchingConfig = Field(default_factory=StrategySwitchingConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     cost_control: CostControlConfig = Field(default_factory=CostControlConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+
+    # Technical indicators and market breadth (raw dict for flexibility)
+    technical_indicators: Dict[str, Any] = Field(default_factory=dict)
+    market_breadth: Dict[str, Any] = Field(default_factory=dict)
 
     # Storage
     database_path: str = "data/trading.db"

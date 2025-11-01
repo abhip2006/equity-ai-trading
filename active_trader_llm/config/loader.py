@@ -33,8 +33,8 @@ def save_config(config: Config, config_path: Union[str, Path]):
 
     with open(config_path, 'w') as f:
         if config_path.suffix in ['.yaml', '.yml']:
-            yaml.dump(config.dict(), f, default_flow_style=False)
+            yaml.dump(config.model_dump(), f, default_flow_style=False)
         elif config_path.suffix == '.json':
-            json.dump(config.dict(), f, indent=2)
+            json.dump(config.model_dump(), f, indent=2)
         else:
             raise ValueError(f"Unsupported config format: {config_path.suffix}")

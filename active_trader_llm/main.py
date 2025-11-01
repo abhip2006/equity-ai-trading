@@ -32,6 +32,8 @@ from risk.risk_manager import RiskManager, PortfolioState
 from memory.memory_manager import MemoryManager, TradeMemory
 from learning.strategy_monitor import StrategyMonitor
 from utils.logging_json import JSONLogger
+from scanners.scanner_orchestrator import ScannerOrchestrator
+import os
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,7 +62,7 @@ class ActiveTraderLLM:
 
         # Initialize components
         self.ingestor = PriceVolumeIngestor(cache_db_path="data/price_cache.db")
-        self.feature_builder = FeatureBuilder(self.config.dict())
+        self.feature_builder = FeatureBuilder(self.config.model_dump())
 
         # Initialize analysts
         api_key = self.config.llm.api_key
@@ -78,17 +80,35 @@ class ActiveTraderLLM:
         self.trader_agent = TraderAgent(api_key=api_key, model=model)
 
         # Initialize risk manager
-        self.risk_manager = RiskManager(self.config.risk_parameters.dict())
+        self.risk_manager = RiskManager(self.config.risk_parameters.model_dump())
 
         # Initialize memory and learning
         self.memory = MemoryManager(self.config.database_path)
         self.strategy_monitor = StrategyMonitor(
             self.memory,
-            self.config.strategy_switching.dict()
+            self.config.strategy_switching.model_dump()
         )
 
         # Initialize logging
         self.json_logger = JSONLogger(self.config.log_path)
+
+        # Initialize scanner (if enabled)
+        self.scanner = None
+        if self.config.scanner.enabled:
+            try:
+                self.scanner = ScannerOrchestrator(
+                    data_fetcher=self.ingestor,
+                    alpaca_api_key=os.getenv('ALPACA_API_KEY'),
+                    alpaca_secret_key=os.getenv('ALPACA_SECRET_KEY'),
+                    alpaca_base_url=os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets'),
+                    anthropic_api_key=api_key,
+                    requests_per_minute=200  # Standard plan
+                )
+                logger.info("Market scanner initialized (two-stage mode enabled)")
+            except Exception as e:
+                logger.warning(f"Failed to initialize scanner: {e}")
+                logger.warning("Falling back to fixed universe mode")
+                self.config.scanner.enabled = False
 
         # Current state
         self.current_strategy = self.config.strategies[0].name
@@ -98,6 +118,9 @@ class ActiveTraderLLM:
             positions=[],
             daily_pnl=0.0
         )
+
+        # Scanner state
+        self.scanned_universe = None
 
         logger.info("ActiveTrader-LLM initialized successfully")
 
@@ -120,10 +143,34 @@ class ActiveTraderLLM:
         logger.info("=" * 80)
 
         try:
+            # Step 0: Run scanner if enabled (determines universe)
+            if self.config.scanner.enabled and self.scanner:
+                logger.info("Step 0: Running two-stage market scanner...")
+                try:
+                    self.scanned_universe = self.scanner.run_full_scan(
+                        force_refresh_universe=False,
+                        refresh_hours=self.config.scanner.refresh_universe_hours,
+                        batch_size=self.config.scanner.stage2.batch_size,
+                        max_batches=self.config.scanner.stage2.max_batches,
+                        max_candidates=self.config.scanner.stage2.max_candidates
+                    )
+                    logger.info(f"Scanner found {len(self.scanned_universe)} candidates")
+
+                    # Use scanned universe for this cycle
+                    active_universe = self.scanned_universe
+                except Exception as e:
+                    logger.error(f"Scanner failed: {e}")
+                    logger.warning("Falling back to fixed universe")
+                    active_universe = self.config.data_sources.universe
+            else:
+                # Use fixed universe from config
+                active_universe = self.config.data_sources.universe
+                logger.info(f"Using fixed universe: {active_universe}")
+
             # Step 1: Fetch data
             logger.info("Step 1: Fetching market data...")
             price_df = self.ingestor.fetch_prices(
-                universe=self.config.data_sources.universe,
+                universe=active_universe,
                 interval=self.config.data_sources.interval,
                 lookback_days=self.config.data_sources.lookback_days,
                 use_cache=self.config.cost_control.cache_data
@@ -154,21 +201,21 @@ class ActiveTraderLLM:
                 # Technical analyst
                 tech_signal = self.technical_analyst.analyze(
                     symbol,
-                    features.dict(),
-                    market_snapshot.dict(),
+                    features.model_dump(),
+                    market_snapshot.model_dump(),
                     memory_context=self.memory.get_context_summary(symbol)
                 )
                 analyst_outputs[symbol] = {
-                    'technical': tech_signal.dict()
+                    'technical': tech_signal.model_dump()
                 }
 
                 # Add optional analysts
                 if self.sentiment_analyst:
                     sent_signal = self.sentiment_analyst.analyze(symbol)
-                    analyst_outputs[symbol]['sentiment'] = sent_signal.dict()
+                    analyst_outputs[symbol]['sentiment'] = sent_signal.model_dump()
 
             # Breadth analyst (market-wide)
-            breadth_signal = self.breadth_analyst.analyze(market_snapshot.dict())
+            breadth_signal = self.breadth_analyst.analyze(market_snapshot.model_dump())
             logger.info(f"Breadth analysis: {breadth_signal.regime} (confidence: {breadth_signal.confidence:.2f})")
 
             # Macro analyst (if enabled)
@@ -183,12 +230,12 @@ class ActiveTraderLLM:
                 bull, bear = self.researcher_debate.debate(
                     symbol,
                     analyst_outputs[symbol],
-                    market_snapshot.dict()
+                    market_snapshot.model_dump()
                 )
 
                 debates[symbol] = {
-                    'bull': bull.dict(),
-                    'bear': bear.dict()
+                    'bull': bull.model_dump(),
+                    'bear': bear.model_dump()
                 }
 
                 logger.info(f"{symbol} debate: Bull {bull.confidence:.2f} vs Bear {bear.confidence:.2f}")
@@ -208,8 +255,8 @@ class ActiveTraderLLM:
                     symbol,
                     analyst_outputs[symbol],
                     (bull_thesis, bear_thesis),
-                    [s.dict() for s in self.config.strategies],
-                    self.config.risk_parameters.dict()
+                    [s.model_dump() for s in self.config.strategies],
+                    self.config.risk_parameters.model_dump()
                 )
 
                 if plan:
@@ -235,8 +282,8 @@ class ActiveTraderLLM:
                     symbol=plan.symbol,
                     analyst_outputs=analyst_outputs[plan.symbol],
                     researcher_outputs=debates[plan.symbol],
-                    trade_plan=plan.dict(),
-                    risk_decision=decision.dict()
+                    trade_plan=plan.model_dump(),
+                    risk_decision=decision.model_dump()
                 )
 
                 if decision.approved:

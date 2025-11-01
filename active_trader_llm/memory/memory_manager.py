@@ -336,6 +336,106 @@ class MemoryManager:
 
         return summary
 
+    def track_scan_performance(self, scan_id: str, candidates: List[str], trades: List[TradeMemory]):
+        """
+        Track performance of stocks selected by scanner.
+
+        Args:
+            scan_id: Unique scan identifier
+            candidates: List of symbols from scanner
+            trades: List of trades executed on those symbols
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Create scan_performance table if not exists
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS scan_performance (
+                scan_id TEXT,
+                symbol TEXT,
+                scan_timestamp TEXT,
+                trade_id TEXT,
+                pnl REAL,
+                outcome TEXT,
+                PRIMARY KEY (scan_id, symbol)
+            )
+        ''')
+
+        # Link trades to scan
+        for trade in trades:
+            if trade.symbol in candidates:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO scan_performance
+                    (scan_id, symbol, scan_timestamp, trade_id, pnl, outcome)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    scan_id,
+                    trade.symbol,
+                    trade.timestamp,
+                    trade.trade_id,
+                    trade.pnl or 0.0,
+                    trade.outcome
+                ))
+
+        conn.commit()
+        conn.close()
+
+        logger.info(f"Tracked {len(trades)} trades for scan {scan_id}")
+
+    def get_scan_statistics(self, days: int = 30) -> Dict:
+        """
+        Get scanner effectiveness statistics.
+
+        Args:
+            days: Number of days to analyze
+
+        Returns:
+            Dictionary with scan performance metrics
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+
+        # Check if table exists
+        cursor.execute('''
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='scan_performance'
+        ''')
+
+        if not cursor.fetchone():
+            conn.close()
+            return {
+                'total_scanned_trades': 0,
+                'win_rate': 0.0,
+                'avg_pnl': 0.0,
+                'total_pnl': 0.0
+            }
+
+        cursor.execute('''
+            SELECT
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END) as wins,
+                AVG(pnl) as avg_pnl,
+                SUM(pnl) as total_pnl
+            FROM scan_performance
+            WHERE scan_timestamp >= ?
+        ''', (cutoff,))
+
+        row = cursor.fetchone()
+        conn.close()
+
+        total_trades = row[0] or 0
+        wins = row[1] or 0
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
+
+        return {
+            'total_scanned_trades': total_trades,
+            'win_rate': win_rate,
+            'avg_pnl': row[2] or 0.0,
+            'total_pnl': row[3] or 0.0
+        }
+
 
 # Example usage
 if __name__ == "__main__":
