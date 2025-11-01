@@ -14,10 +14,17 @@ class DataSourcesConfig(BaseModel):
 
 
 class RiskParameters(BaseModel):
-    max_position_pct: float = 0.05
-    max_concurrent_positions: int = 8
-    max_daily_drawdown: float = 0.10
-    max_sector_concentration: float = 0.30
+    """
+    Risk parameters for trading system.
+
+    Position sizing limits removed - agent decides based on performance.
+    Only emergency safety rail: optional daily drawdown circuit breaker.
+    """
+    # Emergency safety rail (optional)
+    enforce_daily_drawdown: bool = True
+    emergency_drawdown_limit: float = 0.20  # 20% daily loss triggers halt
+
+    # Strategy performance thresholds (for strategy switching, not trade approval)
     min_win_rate: float = 0.35
     min_net_pl: float = 0.0
 

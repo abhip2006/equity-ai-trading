@@ -20,55 +20,57 @@ class MacroSignal(BaseModel):
 
 class MacroAnalyst:
     """
-    Analyzes macro economic context (optional, stub for now).
+    Analyzes macro economic context (optional module).
 
-    Can be extended with:
-    - Interest rates (Fed funds, 10Y yields)
-    - VIX and volatility
-    - Currency strength (DXY)
-    - Commodity prices (oil, gold)
+    IMPORTANT: This is currently a stub. Do NOT enable macro analysis in production
+    until a real data source is configured. This analyzer will refuse to return
+    fabricated neutral bias to prevent misleading the trading system.
+
+    To implement:
+    - Integrate VIX from yfinance (^VIX)
+    - Connect FRED API for treasury yields
+    - Use currency/commodity data (DXY, oil, gold)
+    - Monitor Fed policy signals
     """
 
-    def __init__(self):
-        """Initialize macro analyst"""
-        logger.info("MacroAnalyst initialized (stub mode)")
+    def __init__(self, enabled: bool = False):
+        """
+        Initialize macro analyst.
 
-    def analyze(self, macro_data: Optional[Dict] = None) -> MacroSignal:
+        Args:
+            enabled: Must be explicitly set to True to enable (not recommended without real data source)
+        """
+        if enabled:
+            logger.warning("MacroAnalyst enabled but no real data source configured!")
+            logger.warning("This analyzer is a STUB and should NOT be used in production")
+        logger.info("MacroAnalyst initialized (stub mode - will not return fabricated data)")
+
+    def analyze(self, macro_data: Optional[Dict] = None) -> Optional[MacroSignal]:
         """
         Analyze macro economic context.
 
         Args:
-            macro_data: Optional pre-fetched macro indicators
+            macro_data: Optional pre-fetched macro indicators (REQUIRED for real analysis)
 
         Returns:
-            MacroSignal with market bias
+            None - this stub will not fabricate macro context
         """
-        # Stub implementation
-        # In production, fetch:
+        # STUB: Refuse to return fabricated neutral bias
+        # In production, integrate with real data sources:
         # - VIX from yfinance (^VIX)
         # - Treasury yields from FRED API
-        # - Currency/commodity data
+        # - Currency/commodity data (DXY, oil, gold)
         # - Fed policy signals
 
-        vix = macro_data.get('vix', 15.0) if macro_data else 15.0
+        # STUB: Refuse to operate without LLM-based analysis
+        # This stub will NOT use hardcoded VIX thresholds
+        logger.error("Macro analysis requested but MacroAnalyst is a stub")
+        logger.error("This module requires LLM-based interpretation of macro data")
+        logger.error("Please disable macro analysis or implement LLM reasoning")
+        logger.error("TODO: Implement LLM-based macro analysis that interprets VIX, yields, etc.")
 
-        if vix > 25:
-            bias = "risk_off"
-            context = [f"VIX elevated at {vix:.1f}", "Market stress signals"]
-        elif vix < 12:
-            bias = "risk_on"
-            context = ["VIX low", "Complacency or stability"]
-        else:
-            bias = "neutral"
-            context = ["VIX normal range", "Balanced conditions"]
-
-        logger.info(f"Macro analysis: {bias} bias (VIX: {vix:.1f})")
-
-        return MacroSignal(
-            market_context=context,
-            bias=bias,
-            confidence=0.5  # Moderate confidence in stub mode
-        )
+        # Return None instead of using hardcoded VIX thresholds
+        return None
 
 
 # Example usage

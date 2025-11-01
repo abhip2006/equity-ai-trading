@@ -235,62 +235,6 @@ Return your analysis as JSON:"""
         logger.info(f"Total favorable stocks across all batches: {len(all_favorable)}")
         return all_favorable
 
-    def get_fallback_selection(
-        self,
-        candidates: List[str],
-        indicators_map: Dict[str, TechnicalIndicators],
-        guidance: Stage1Guidance,
-        max_count: int = 20
-    ) -> List[str]:
-        """
-        Rule-based fallback if LLM fails.
-
-        Args:
-            candidates: List of candidates
-            indicators_map: Dict of indicators
-            guidance: Stage1Guidance
-            max_count: Max stocks to return
-
-        Returns:
-            List of symbols
-        """
-        logger.warning("Using fallback rule-based selection (LLM failed)")
-
-        scored = []
-
-        for symbol in candidates:
-            if symbol not in indicators_map:
-                continue
-
-            ind = indicators_map[symbol]
-            score = 0.0
-
-            # Momentum score
-            if ind.price_change_5d_pct and ind.price_change_5d_pct > 3.0:
-                score += 1.0
-            if ind.rsi_14 and 50 < ind.rsi_14 < 70:
-                score += 1.0
-            if ind.macd_hist and ind.macd_hist > 0:
-                score += 1.0
-
-            # Trend score
-            if ind.pct_from_ema50 and ind.pct_from_ema50 > 0:
-                score += 1.0
-            if ind.pct_from_ema200 and ind.pct_from_ema200 > 0:
-                score += 0.5
-
-            # Volume score
-            if ind.volume_ratio and ind.volume_ratio > 2.0:
-                score += 1.5
-
-            scored.append((symbol, score))
-
-        # Sort by score
-        scored.sort(key=lambda x: x[1], reverse=True)
-
-        # Take top N
-        return [sym for sym, score in scored[:max_count]]
-
 
 # Example usage
 if __name__ == "__main__":

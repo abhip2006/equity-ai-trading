@@ -205,6 +205,12 @@ class ActiveTraderLLM:
                     market_snapshot.model_dump(),
                     memory_context=self.memory.get_context_summary(symbol)
                 )
+
+                # Skip symbol if technical analysis failed (missing price/ATR)
+                if tech_signal is None:
+                    logger.warning(f"{symbol}: Technical analysis returned None - skipping symbol")
+                    continue
+
                 analyst_outputs[symbol] = {
                     'technical': tech_signal.model_dump()
                 }
@@ -212,26 +218,52 @@ class ActiveTraderLLM:
                 # Add optional analysts
                 if self.sentiment_analyst:
                     sent_signal = self.sentiment_analyst.analyze(symbol)
-                    analyst_outputs[symbol]['sentiment'] = sent_signal.model_dump()
+                    if sent_signal:
+                        analyst_outputs[symbol]['sentiment'] = sent_signal.model_dump()
+                    else:
+                        logger.warning(f"{symbol}: Sentiment analysis returned None (stub mode)")
+                        # Don't add sentiment to analyst_outputs - trading will proceed without it
 
             # Breadth analyst (market-wide)
             breadth_signal = self.breadth_analyst.analyze(market_snapshot.model_dump())
+
+            # Abort if breadth analysis failed
+            if breadth_signal is None:
+                logger.error("Breadth analysis failed - cannot determine market regime")
+                logger.error("Aborting trading cycle - market regime required for strategy selection")
+                return
+
             logger.info(f"Breadth analysis: {breadth_signal.regime} (confidence: {breadth_signal.confidence:.2f})")
 
             # Macro analyst (if enabled)
+            # NOTE: VIX data not currently available in MarketSnapshot
+            # TODO: Implement VIX data fetching (e.g., from yfinance ^VIX)
             if self.macro_analyst:
-                macro_signal = self.macro_analyst.analyze({'vix': market_snapshot.vix})
+                logger.warning("Macro analyst enabled but VIX data not available")
+                macro_signal = self.macro_analyst.analyze(None)  # Pass None
+                if macro_signal:
+                    logger.info(f"Macro analysis: {macro_signal.bias} (confidence: {macro_signal.confidence:.2f})")
+                else:
+                    logger.warning("Macro analysis returned None (stub mode)")
+                    # Don't add macro to analyst context - trading will proceed without it
 
             # Step 4: Researcher debate
             logger.info("Step 4: Running researcher debate...")
             debates = {}
 
-            for symbol in features_dict.keys():
-                bull, bear = self.researcher_debate.debate(
+            for symbol in analyst_outputs.keys():
+                debate_result = self.researcher_debate.debate(
                     symbol,
                     analyst_outputs[symbol],
                     market_snapshot.model_dump()
                 )
+
+                # Skip symbol if debate failed
+                if debate_result is None:
+                    logger.warning(f"{symbol}: Researcher debate returned None - skipping symbol")
+                    continue
+
+                bull, bear = debate_result
 
                 debates[symbol] = {
                     'bull': bull.model_dump(),
@@ -244,7 +276,7 @@ class ActiveTraderLLM:
             logger.info("Step 5: Generating trade plans...")
             trade_plans = []
 
-            for symbol in features_dict.keys():
+            for symbol in debates.keys():
                 bull, bear = debates[symbol]['bull'], debates[symbol]['bear']
 
                 from researchers.bull_bear import BullThesis, BearThesis

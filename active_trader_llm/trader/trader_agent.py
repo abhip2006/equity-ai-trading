@@ -116,14 +116,24 @@ STRATEGY LIBRARY:
         for strat in strategy_lib:
             prompt += f"  - {strat['name']}: suitable for {strat['regime']} regime\n"
 
+        # Extract price and ATR from technical analysis
+        price = analyst_outputs.get('technical', {}).get('price', 0.0)
+        atr = analyst_outputs.get('technical', {}).get('atr', 1.0)
+
+        # Warn if using fallback values (indicates data quality issue)
+        if price == 0.0:
+            logger.warning(f"{symbol}: Price is 0.0 - technical analysis may have missing data")
+        if atr == 1.0:
+            logger.warning(f"{symbol}: ATR is 1.0 (fallback) - position sizing may be imprecise")
+
         prompt += f"""
 RISK PARAMETERS:
   Max Position Size: {risk_params.get('max_position_pct', 0.05)*100:.1f}%
   Max Concurrent: {risk_params.get('max_concurrent_positions', 8)} positions
 
 CURRENT PRICE DATA:
-  Price: {analyst_outputs.get('technical', {}).get('price', 0.0):.2f}
-  ATR: {analyst_outputs.get('technical', {}).get('atr', 1.0):.2f}
+  Price: {price:.2f}
+  ATR: {atr:.2f}
 """
 
         if memory_context:

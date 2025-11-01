@@ -21,40 +21,53 @@ class SentimentSignal(BaseModel):
 
 class SentimentAnalyst:
     """
-    Analyzes sentiment from news/social media (optional, stub for now).
+    Analyzes sentiment from news/social media (optional).
 
-    Can be extended with FinBERT, Reddit/Twitter APIs, or news aggregators.
+    IMPORTANT: This is currently a stub. Do NOT enable sentiment analysis in production
+    until a real data source is configured. This analyzer will refuse to return
+    fabricated neutral sentiment to prevent misleading the trading system.
+
+    To implement:
+    - Integrate FinBERT for news analysis
+    - Connect Reddit/Twitter APIs for social sentiment
+    - Use news aggregators (Benzinga, NewsAPI, etc.)
     """
 
-    def __init__(self):
-        """Initialize sentiment analyst"""
-        logger.info("SentimentAnalyst initialized (stub mode)")
+    def __init__(self, enabled: bool = False):
+        """
+        Initialize sentiment analyst.
 
-    def analyze(self, symbol: str, sentiment_data: Optional[Dict] = None) -> SentimentSignal:
+        Args:
+            enabled: Must be explicitly set to True to enable (not recommended without real data source)
+        """
+        if enabled:
+            logger.warning("SentimentAnalyst enabled but no real data source configured!")
+            logger.warning("This analyzer is a STUB and should NOT be used in production")
+        logger.info("SentimentAnalyst initialized (stub mode - will not return fabricated data)")
+
+    def analyze(self, symbol: str, sentiment_data: Optional[Dict] = None) -> Optional[SentimentSignal]:
         """
         Analyze sentiment for a symbol.
 
         Args:
             symbol: Stock symbol
-            sentiment_data: Optional pre-fetched sentiment data
+            sentiment_data: Optional pre-fetched sentiment data (REQUIRED for real analysis)
 
         Returns:
-            SentimentSignal with sentiment score
+            None - this stub will not fabricate sentiment data
         """
-        # Stub implementation - returns neutral sentiment
-        # In production, integrate with:
+        # STUB: Refuse to return fabricated sentiment
+        # In production, integrate with real data sources:
         # - FinBERT for news analysis
         # - Reddit/Twitter APIs for social sentiment
         # - News aggregators (Benzinga, NewsAPI, etc.)
 
-        logger.info(f"Sentiment analysis for {symbol} (stub mode - returning neutral)")
+        logger.error(f"Sentiment analysis requested for {symbol} but no real data source configured")
+        logger.error("SentimentAnalyst is a stub and will not fabricate neutral sentiment")
+        logger.error("Please disable sentiment analysis or implement a real data source")
 
-        return SentimentSignal(
-            symbol=symbol,
-            sentiment_score=0.0,  # Neutral
-            confidence=0.3,  # Low confidence in stub mode
-            drivers=["headlines: neutral", "social: not available"]
-        )
+        # Return None instead of fabricated neutral sentiment
+        return None
 
     def analyze_batch(self, symbols: List[str]) -> Dict[str, SentimentSignal]:
         """Analyze sentiment for multiple symbols"""

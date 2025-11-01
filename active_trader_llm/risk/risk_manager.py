@@ -27,14 +27,17 @@ class PortfolioState(BaseModel):
 
 class RiskManager:
     """
-    Validates trade plans against risk parameters and portfolio constraints.
+    Validates trade plans against portfolio constraints.
 
-    Implements:
-    - Position sizing limits
-    - Concurrent position limits
-    - Sector concentration limits
-    - Daily drawdown cutoffs
-    - Correlation checks (optional)
+    IMPORTANT: Position sizing limits have been removed to allow the LLM agent
+    to determine appropriate position sizes based on market conditions and performance.
+
+    Optional safety rails (can be disabled via risk_params):
+    - enforce_daily_drawdown: Emergency stop on excessive daily losses (default: True)
+    - emergency_drawdown_limit: Max daily loss % before halting (default: 0.20)
+
+    All other constraints (max_position_pct, max_concurrent_positions,
+    sector concentration, min_risk_reward) have been removed.
     """
 
     def __init__(self, risk_params: Dict):
@@ -42,14 +45,13 @@ class RiskManager:
         Initialize risk manager.
 
         Args:
-            risk_params: Dict with risk parameters
-                - max_position_pct: Max % of portfolio per position
-                - max_concurrent_positions: Max number of open positions
-                - max_daily_drawdown: Max daily loss as % of portfolio
-                - max_sector_concentration: Max % in single sector (optional)
+            risk_params: Dict with optional safety parameters
+                - enforce_daily_drawdown: Enable emergency drawdown stop (default: True)
+                - emergency_drawdown_limit: Max daily loss % (default: 0.20)
         """
         self.risk_params = risk_params
         logger.info(f"RiskManager initialized with params: {risk_params}")
+        logger.info("Position sizing limits DISABLED - agent decides based on performance")
 
     def evaluate(
         self,
@@ -57,112 +59,64 @@ class RiskManager:
         portfolio_state: PortfolioState
     ) -> RiskDecision:
         """
-        Evaluate and potentially modify trade plan.
+        Evaluate trade plan with minimal interference.
+
+        Position sizing limits have been removed - the agent decides based on performance.
+        Only emergency safety rail: optional daily drawdown circuit breaker.
 
         Args:
-            trade_plan: Proposed trade plan
+            trade_plan: Proposed trade plan from agent
             portfolio_state: Current portfolio state
 
         Returns:
-            RiskDecision with approval status and any modifications
+            RiskDecision with approval status (modifications removed)
         """
         checks = []
-        modifications = {}
         approved = True
 
-        # 1. Check concurrent positions limit
+        # Log what the agent requested (for observability)
         current_positions = len(portfolio_state.positions)
-        max_positions = self.risk_params.get('max_concurrent_positions', 8)
-
-        if current_positions >= max_positions:
-            return RiskDecision(
-                approved=False,
-                reason=f"Max concurrent positions reached ({current_positions}/{max_positions})"
-            )
-
-        checks.append(f"Concurrent positions: {current_positions}/{max_positions} ✓")
-
-        # 2. Check position size
-        max_position_pct = self.risk_params.get('max_position_pct', 0.05)
         requested_size = trade_plan.position_size_pct
+        rr_ratio = trade_plan.risk_reward_ratio
 
-        if requested_size > max_position_pct:
-            modifications['position_size_pct'] = max_position_pct
-            checks.append(f"Position size reduced: {requested_size:.1%} -> {max_position_pct:.1%}")
-        else:
-            checks.append(f"Position size OK: {requested_size:.1%} <= {max_position_pct:.1%} ✓")
+        logger.info(
+            f"{trade_plan.symbol} agent request: "
+            f"size={requested_size:.1%}, RR={rr_ratio:.2f}, "
+            f"positions={current_positions}"
+        )
 
-        # 3. Check daily drawdown
-        max_daily_dd = self.risk_params.get('max_daily_drawdown', 0.10)
-        current_dd_pct = abs(portfolio_state.daily_pnl) / portfolio_state.equity if portfolio_state.equity > 0 else 0
+        checks.append(f"Agent requested: {requested_size:.1%} position size")
+        checks.append(f"Risk/reward: {rr_ratio:.2f}")
+        checks.append(f"Current positions: {current_positions}")
 
-        if current_dd_pct >= max_daily_dd:
-            return RiskDecision(
-                approved=False,
-                reason=f"Daily drawdown limit exceeded ({current_dd_pct:.1%} >= {max_daily_dd:.1%})"
-            )
+        # ONLY EMERGENCY SAFETY RAIL: Daily drawdown circuit breaker (optional)
+        enforce_dd = self.risk_params.get('enforce_daily_drawdown', True)
 
-        checks.append(f"Daily drawdown: {current_dd_pct:.1%} < {max_daily_dd:.1%} ✓")
+        if enforce_dd:
+            emergency_dd_limit = self.risk_params.get('emergency_drawdown_limit', 0.20)
+            current_dd_pct = abs(portfolio_state.daily_pnl) / portfolio_state.equity if portfolio_state.equity > 0 else 0
 
-        # 4. Check sector concentration (if enabled)
-        max_sector_concentration = self.risk_params.get('max_sector_concentration')
-        if max_sector_concentration:
-            sector_exposure = self._calculate_sector_exposure(portfolio_state, trade_plan)
-
-            if sector_exposure > max_sector_concentration:
-                # Could reduce size instead of rejecting
-                size_reduction = max_sector_concentration / sector_exposure
-                adjusted_size = trade_plan.position_size_pct * size_reduction
-
-                modifications['position_size_pct'] = min(
-                    adjusted_size,
-                    modifications.get('position_size_pct', max_position_pct)
+            if current_dd_pct >= emergency_dd_limit:
+                logger.error(
+                    f"EMERGENCY STOP: Daily drawdown {current_dd_pct:.1%} >= {emergency_dd_limit:.1%}"
+                )
+                return RiskDecision(
+                    approved=False,
+                    reason=f"Emergency drawdown circuit breaker triggered ({current_dd_pct:.1%} >= {emergency_dd_limit:.1%})"
                 )
 
-                checks.append(f"Sector concentration reduced to {max_sector_concentration:.1%}")
-            else:
-                checks.append(f"Sector concentration OK: {sector_exposure:.1%} <= {max_sector_concentration:.1%} ✓")
+            checks.append(f"Daily drawdown: {current_dd_pct:.1%} < {emergency_dd_limit:.1%} (emergency limit)")
 
-        # 5. Check minimum risk/reward
-        min_rr = self.risk_params.get('min_risk_reward', 1.5)
-        if trade_plan.risk_reward_ratio < min_rr:
-            return RiskDecision(
-                approved=False,
-                reason=f"Risk/reward too low ({trade_plan.risk_reward_ratio:.2f} < {min_rr:.2f})"
-            )
-
-        checks.append(f"Risk/reward: {trade_plan.risk_reward_ratio:.2f} >= {min_rr:.2f} ✓")
-
-        # Compile decision
+        # APPROVED - Agent's decision passes through unchanged
         reason = "; ".join(checks)
-
-        if modifications:
-            reason = f"Approved with modifications: {modifications}. " + reason
-
-        logger.info(f"Risk evaluation for {trade_plan.symbol}: {reason}")
+        logger.info(f"Trade approved for {trade_plan.symbol}: {reason}")
 
         return RiskDecision(
             approved=approved,
-            modifications=modifications,
+            modifications={},  # No modifications - agent decides
             reason=reason
         )
 
-    def _calculate_sector_exposure(self, portfolio_state: PortfolioState, trade_plan: 'TradePlan') -> float:
-        """Calculate sector exposure including proposed trade"""
-        # Simplified - in production, fetch sector mappings
-        # For now, assume all tech stocks
-        sector = "Technology"  # Would lookup via yfinance or mapping
-
-        sector_exposure = sum(
-            pos['size_pct']
-            for pos in portfolio_state.positions
-            if pos.get('sector') == sector
-        )
-
-        # Add proposed trade
-        sector_exposure += trade_plan.position_size_pct
-
-        return sector_exposure
 
     def batch_evaluate(
         self,
@@ -170,7 +124,10 @@ class RiskManager:
         portfolio_state: PortfolioState
     ) -> List[tuple['TradePlan', RiskDecision]]:
         """
-        Evaluate multiple trade plans.
+        Evaluate multiple trade plans sequentially.
+
+        Since position limits are removed, all plans pass through unless
+        emergency drawdown circuit breaker is triggered.
 
         Args:
             trade_plans: List of trade plans to evaluate
@@ -189,7 +146,7 @@ class RiskManager:
             if decision.approved:
                 portfolio_state.positions.append({
                     'symbol': plan.symbol,
-                    'size_pct': decision.modifications.get('position_size_pct', plan.position_size_pct)
+                    'size_pct': plan.position_size_pct  # Use agent's requested size (no modifications)
                 })
 
         return results
@@ -201,7 +158,7 @@ if __name__ == "__main__":
 
     from active_trader_llm.trader.trader_agent import TradePlan
 
-    # Sample trade plan
+    # Sample trade plan - agent decides 7% position size
     plan = TradePlan(
         symbol="AAPL",
         strategy="momentum_breakout",
@@ -209,7 +166,7 @@ if __name__ == "__main__":
         entry=175.0,
         stop_loss=172.0,
         take_profit=180.0,
-        position_size_pct=0.07,  # Requesting 7% (over limit)
+        position_size_pct=0.07,  # Agent's decision - will be approved
         time_horizon="3d",
         rationale=["Strong momentum", "Breakout confirmed"],
         risk_reward_ratio=1.67
@@ -223,16 +180,13 @@ if __name__ == "__main__":
             {'symbol': 'MSFT', 'size_pct': 0.05, 'sector': 'Technology'},
             {'symbol': 'GOOGL', 'size_pct': 0.04, 'sector': 'Technology'}
         ],
-        daily_pnl=-500  # Small loss today
+        daily_pnl=-500  # Small loss today (-0.5%, well below emergency threshold)
     )
 
-    # Risk parameters
+    # Risk parameters - only emergency safety rail
     risk_params = {
-        'max_position_pct': 0.05,
-        'max_concurrent_positions': 8,
-        'max_daily_drawdown': 0.10,
-        'max_sector_concentration': 0.30,
-        'min_risk_reward': 1.5
+        'enforce_daily_drawdown': True,  # Optional emergency circuit breaker
+        'emergency_drawdown_limit': 0.20  # 20% daily loss triggers halt
     }
 
     manager = RiskManager(risk_params)
@@ -240,5 +194,6 @@ if __name__ == "__main__":
 
     print(f"\nRisk Decision:")
     print(f"  Approved: {decision.approved}")
-    print(f"  Modifications: {decision.modifications}")
+    print(f"  Modifications: {decision.modifications}")  # Should be empty
     print(f"  Reason: {decision.reason}")
+    print(f"\nAgent's 7% position size was approved (no limits enforced)")

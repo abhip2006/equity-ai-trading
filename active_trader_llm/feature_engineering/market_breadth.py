@@ -23,16 +23,9 @@ class MarketBreadthAnalyzer:
     def analyze(self, price_df: pd.DataFrame, features: Dict[str, FeatureSet]) -> MarketSnapshot:
         """Calculate market breadth features"""
         if not features:
-            logger.warning("No features for breadth calculation")
-            return MarketSnapshot(
-                timestamp=str(pd.Timestamp.now()),
-                regime_hint="range",
-                breadth_score=0.0,
-                advance_decline_ratio=1.0,
-                new_highs=0,
-                new_lows=0,
-                up_volume_ratio=0.5
-            )
+            logger.error("Cannot calculate market breadth: No features provided")
+            logger.error("Market breadth requires real feature data for all symbols")
+            raise ValueError("Market breadth analysis requires feature data - cannot proceed with empty features")
 
         timestamp = list(features.values())[0].timestamp
 
@@ -148,17 +141,43 @@ class MarketBreadthAnalyzer:
 
     def _determine_regime(self, breadth: float, rsi: Optional[float],
                          pct_sma200: Optional[float]) -> str:
-        """Determine market regime"""
+        """
+        Determine market regime based on available indicators.
+
+        Breadth is the PRIMARY signal. RSI and pct_sma200 are confirmatory.
+        If confirmatory indicators are missing, regime is determined from breadth alone.
+        """
         t = self.regime_config
 
-        rsi = rsi if rsi is not None else 50.0
-        pct_sma200 = pct_sma200 if pct_sma200 is not None else 0.5
+        # Warn if key indicators are missing - regime will be breadth-only
+        if rsi is None:
+            logger.warning("Average RSI unavailable - regime determined from breadth only")
+        if pct_sma200 is None:
+            logger.warning("Pct above SMA200 unavailable - regime determined from breadth only")
 
-        if breadth < t['risk_off_breadth'] or rsi < t['risk_off_rsi']:
+        # Determine regime using available indicators (NO fabricated values)
+
+        # Risk-off check: breadth OR rsi (if available)
+        risk_off_breadth = breadth < t['risk_off_breadth']
+        risk_off_rsi = (rsi is not None and rsi < t['risk_off_rsi'])
+        if risk_off_breadth or risk_off_rsi:
             return "risk_off"
-        elif breadth > t['trending_bull_breadth'] and pct_sma200 > t['trending_bull_pct_above_ema200']:
-            return "trending_bull"
-        elif breadth < t['trending_bear_breadth']:
+
+        # Trending bull check: breadth AND pct_sma200 (if available)
+        bull_breadth = breadth > t['trending_bull_breadth']
+        bull_sma200 = (pct_sma200 is not None and pct_sma200 > t['trending_bull_pct_above_ema200'])
+        # Only confirm trending_bull if we have pct_sma200 data OR breadth is very strong
+        if bull_breadth:
+            if pct_sma200 is None:
+                # Require stronger breadth confirmation without pct_sma200
+                if breadth > t['trending_bull_breadth'] * 1.2:
+                    return "trending_bull"
+            elif bull_sma200:
+                return "trending_bull"
+
+        # Trending bear check: breadth only (no confirmatory needed)
+        if breadth < t['trending_bear_breadth']:
             return "trending_bear"
-        else:
-            return "range"
+
+        # Default: range
+        return "range"

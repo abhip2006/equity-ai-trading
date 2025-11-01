@@ -15,10 +15,9 @@ import logging
 import time
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
-import pandas as pd
 
 from .universe_loader import UniverseLoader, TradableStock
-from .market_aggregator import MarketAggregator, StockMetrics
+from .market_aggregator import MarketAggregator
 from .stage1_analyzer import Stage1Analyzer, Stage1Guidance
 from .programmatic_filter import ProgrammaticFilter, FilterResult
 from .raw_data_scanner import RawDataScanner, TechnicalIndicators
@@ -144,19 +143,13 @@ class ScannerOrchestrator:
         # ===================================================================
         logger.info("\n[STEP 2] Stage 1: Calculating market-wide statistics (NO LLM)...")
 
-        # For demo purposes, we'll calculate metrics for a subset
-        # In production, you'd calculate for all 5000+ stocks
-        # TODO: Implement bulk data fetching for all symbols
-
-        # For now, let's use a sample of universe
-        sample_size = min(500, len(universe))  # Sample for demo
-        universe_sample = universe[:sample_size]
-        logger.info(f"Calculating metrics for sample of {sample_size} stocks...")
+        # Use full universe for market statistics
+        logger.info(f"Calculating metrics for {len(universe)} stocks...")
 
         # Fetch price data using Alpaca
         stock_metrics = []
-        symbols_to_fetch = [stock.symbol for stock in universe_sample]
-        sector_map = {stock.symbol: stock.sector for stock in universe_sample}
+        symbols_to_fetch = [stock.symbol for stock in universe]
+        sector_map = {stock.symbol: stock.sector for stock in universe}
 
         logger.info(f"Fetching price data for {len(symbols_to_fetch)} stocks...")
 
@@ -196,20 +189,29 @@ class ScannerOrchestrator:
                             interval='1d',
                             lookback_days=90
                         )
-                        # Process yfinance data...
-                        logger.info(f"Using yfinance fallback data")
+                        # Process yfinance data
+                        for symbol in symbols_to_fetch:
+                            if symbol in price_df['symbol'].unique():
+                                symbol_df = price_df[price_df['symbol'] == symbol]
+                                metrics = self.market_aggregator.calculate_stock_metrics(
+                                    symbol=symbol,
+                                    sector=sector_map.get(symbol, "Unknown"),
+                                    price_data=symbol_df
+                                )
+                                if metrics:
+                                    stock_metrics.append(metrics)
+                        logger.info(f"Using yfinance fallback - calculated metrics for {len(stock_metrics)} stocks")
                     except Exception as fallback_error:
                         logger.error(f"Fallback also failed: {fallback_error}")
+                        logger.error("Cannot proceed without market data. Aborting scan.")
+                        return []
+                else:
+                    logger.error("No data source available (Alpaca and yfinance both failed). Aborting scan.")
+                    return []
         else:
-            logger.warning("No Alpaca ingestor available. Using limited sample data.")
-            # Create limited metrics from available data
-            for stock in universe_sample[:100]:
-                mock_metric = StockMetrics(
-                    symbol=stock.symbol,
-                    sector=stock.sector,
-                    current_price=stock.last_price
-                )
-                stock_metrics.append(mock_metric)
+            logger.error("No Alpaca ingestor configured and no fallback available. Aborting scan.")
+            logger.error("Please provide either Alpaca API credentials or a data_fetcher instance.")
+            return []
 
         # Aggregate by sector
         sector_stats = self.market_aggregator.aggregate_by_sector(stock_metrics)
@@ -234,8 +236,9 @@ class ScannerOrchestrator:
         llm_calls += 1
 
         if not stage1_guidance:
-            logger.warning("Stage 1 LLM failed, using fallback guidance")
-            stage1_guidance = self.stage1_analyzer.get_fallback_guidance(market_summary)
+            logger.error("Stage 1 LLM failed - cannot proceed without market interpretation")
+            logger.error("Refusing to use hardcoded fallback thresholds for market scanning")
+            return []
 
         logger.info(f"Stage 1 Guidance:")
         logger.info(f"  Market bias: {stage1_guidance.market_bias}")
@@ -300,24 +303,19 @@ class ScannerOrchestrator:
             logger.warning("No Alpaca ingestor available. Using fallback selection")
 
         # Analyze in batches
-        if indicators_map:
-            final_candidates = self.stage2_analyzer.analyze_all_batches(
-                filter_result.candidates,
-                indicators_map,
-                stage1_guidance,
-                batch_size=batch_size,
-                max_batches=max_batches
-            )
-            llm_calls += min(max_batches, (len(filter_result.candidates) + batch_size - 1) // batch_size)
-        else:
-            # Use fallback selection if no indicators
-            logger.warning("Using fallback selection (no indicators available)")
-            final_candidates = self.stage2_analyzer.get_fallback_selection(
-                filter_result.candidates[:20],  # Limit to 20
-                {},
-                stage1_guidance,
-                max_count=20
-            )
+        if not indicators_map:
+            logger.error("Cannot proceed with Stage 2: No technical indicators available")
+            logger.error("Stage 2 requires real indicator data for deep analysis")
+            return []
+
+        final_candidates = self.stage2_analyzer.analyze_all_batches(
+            filter_result.candidates,
+            indicators_map,
+            stage1_guidance,
+            batch_size=batch_size,
+            max_batches=max_batches
+        )
+        llm_calls += min(max_batches, (len(filter_result.candidates) + batch_size - 1) // batch_size)
 
         # ===================================================================
         # SAVE RESULTS
@@ -358,21 +356,30 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO)
 
-    # Mock data fetcher
-    class MockDataFetcher:
-        def fetch_prices(self, symbols, interval='1d', lookback_days=90):
-            return pd.DataFrame()  # Mock implementation
+    # IMPORTANT: This scanner requires REAL market data from Alpaca or yfinance
+    # Do NOT use mock/sample data - it defeats the entire purpose of the system
 
-    data_fetcher = MockDataFetcher()
+    # Option 1: Use Alpaca (recommended for production)
+    alpaca_api_key = os.getenv('ALPACA_API_KEY')
+    alpaca_secret_key = os.getenv('ALPACA_SECRET_KEY')
+
+    if not alpaca_api_key or not alpaca_secret_key:
+        logger.error("ALPACA_API_KEY and ALPACA_SECRET_KEY must be set as environment variables")
+        logger.error("This scanner requires REAL market data to function properly")
+        exit(1)
+
+    # Option 2: Optionally provide yfinance fallback
+    # from data_ingestion.price_volume_ingestor import PriceVolumeIngestor
+    # data_fetcher = PriceVolumeIngestor()
 
     orchestrator = ScannerOrchestrator(
-        data_fetcher=data_fetcher,
-        alpaca_api_key=os.getenv('ALPACA_API_KEY'),
-        alpaca_secret_key=os.getenv('ALPACA_SECRET_KEY'),
+        data_fetcher=None,  # Optional yfinance fallback
+        alpaca_api_key=alpaca_api_key,
+        alpaca_secret_key=alpaca_secret_key,
         anthropic_api_key=os.getenv('ANTHROPIC_API_KEY')
     )
 
-    # Run scan
+    # Run scan with REAL market data
     candidates = orchestrator.run_full_scan(
         force_refresh_universe=False,
         refresh_hours=24,

@@ -140,9 +140,11 @@ Macro:
         analyst_outputs: Dict,
         market_snapshot: Dict,
         memory_summary: Optional[str] = None
-    ) -> tuple[BullThesis, BearThesis]:
+    ) -> Optional[tuple[BullThesis, BearThesis]]:
         """
         Generate bull and bear debate for a symbol.
+
+        Returns None if LLM fails (refuses to fabricate debate).
 
         Args:
             symbol: Stock symbol
@@ -193,53 +195,13 @@ Macro:
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse debate for {symbol}: {e}")
             logger.error(f"Response: {content}")
-
-            # Fallback
-            return self._fallback_debate(symbol, analyst_outputs)
+            logger.error("Debate LLM failed - refusing to fabricate synthetic debate arguments")
+            return None
 
         except Exception as e:
             logger.error(f"Error in debate for {symbol}: {e}")
-            return self._fallback_debate(symbol, analyst_outputs)
-
-    def _fallback_debate(self, symbol: str, analyst_outputs: Dict) -> tuple[BullThesis, BearThesis]:
-        """Generate simple rule-based debate as fallback"""
-        tech_signal = analyst_outputs.get('technical', {}).get('signal', 'neutral')
-
-        if tech_signal == 'long':
-            bull = BullThesis(
-                symbol=symbol,
-                thesis=["Technical indicators favor upside", "Momentum positive"],
-                confidence=0.6
-            )
-            bear = BearThesis(
-                symbol=symbol,
-                thesis=["Could face resistance", "Market conditions uncertain"],
-                confidence=0.4
-            )
-        elif tech_signal == 'short':
-            bull = BullThesis(
-                symbol=symbol,
-                thesis=["Potential oversold bounce", "Support levels nearby"],
-                confidence=0.4
-            )
-            bear = BearThesis(
-                symbol=symbol,
-                thesis=["Technical weakness evident", "Downtrend intact"],
-                confidence=0.6
-            )
-        else:
-            bull = BullThesis(
-                symbol=symbol,
-                thesis=["Mixed signals - wait for clarity"],
-                confidence=0.3
-            )
-            bear = BearThesis(
-                symbol=symbol,
-                thesis=["Mixed signals - avoid risk"],
-                confidence=0.3
-            )
-
-        return bull, bear
+            logger.error("Debate LLM failed - refusing to fabricate synthetic debate arguments")
+            return None
 
     def debate_batch(
         self,

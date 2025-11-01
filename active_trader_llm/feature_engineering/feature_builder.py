@@ -105,14 +105,8 @@ class FeatureBuilder:
                               features: Dict[str, FeatureSet]) -> MarketSnapshot:
         """Calculate market breadth and regime"""
         if self.breadth_analyzer is None:
-            return MarketSnapshot(
-                timestamp=str(pd.Timestamp.now()),
-                regime_hint="range",
-                breadth_score=0.0,
-                advance_decline_ratio=1.0,
-                new_highs=0,
-                new_lows=0,
-                up_volume_ratio=0.5
-            )
+            logger.error("Cannot build market snapshot: Market breadth analyzer is disabled")
+            logger.error("Enable market_breadth in config or the system cannot determine market regime")
+            raise ValueError("Market breadth analysis is required but disabled in config")
 
         return self.breadth_analyzer.analyze(price_df, features)

@@ -315,13 +315,16 @@ class ScannerDB:
 
 # Example usage
 if __name__ == "__main__":
+    # IMPORTANT: This example code seeds SAMPLE DATA for demonstration purposes only.
+    # This code is safely guarded by __name__ == "__main__" and will NEVER run in
+    # production workflows. It only executes when this file is run directly for testing.
     from datetime import timedelta
 
     logging.basicConfig(level=logging.INFO)
 
     db = ScannerDB()
 
-    # Save sample tradable universe
+    # Save sample tradable universe (EXAMPLE DATA ONLY - NOT FOR PRODUCTION)
     sample_stocks = [
         TradableStock(
             symbol="AAPL",

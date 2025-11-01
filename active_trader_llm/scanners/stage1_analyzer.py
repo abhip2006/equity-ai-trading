@@ -55,15 +55,16 @@ CRITICAL: Return ONLY valid JSON matching this exact schema, NO prose:
     "focus_sectors": ["sector1", "sector2", ...],
     "focus_patterns": ["breakouts", "momentum", "mean_reversion", "pullback"],
     "filtering_criteria": {
-        "volume_ratio_threshold": 2.5,
-        "distance_from_52w_high_threshold_pct": 7.0,
-        "min_price_change_5d_pct": 3.0
+        "volume_ratio_threshold": <number>,
+        "distance_from_52w_high_threshold_pct": <number>,
+        "min_price_change_5d_pct": <number>
     },
-    "target_count": 100,
+    "target_count": <number>,
     "reasoning": "Brief explanation of market conditions and why these filters make sense"
 }
 
-You are NOT calculating anything. You are interpreting already-calculated data."""
+You are NOT calculating anything. You are interpreting already-calculated data.
+Determine appropriate thresholds based on current market conditions - do NOT use fixed rules."""
 
     def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022", temperature: float = 0.3):
         """
@@ -162,53 +163,6 @@ SECTOR BREAKDOWN (top sectors by stock count):
             logger.error(f"Error in Stage 1 LLM call: {e}")
             return None
 
-    def get_fallback_guidance(self, market_summary: MarketSummary) -> Stage1Guidance:
-        """
-        Generate rule-based fallback guidance if LLM fails.
-
-        Args:
-            market_summary: MarketSummary object
-
-        Returns:
-            Stage1Guidance with conservative defaults
-        """
-        # Determine bias from breadth
-        if market_summary.market_breadth_score > 0.3:
-            market_bias = "bullish"
-            patterns = ["breakouts", "momentum"]
-        elif market_summary.market_breadth_score < -0.3:
-            market_bias = "bearish"
-            patterns = ["mean_reversion", "oversold_bounce"]
-        else:
-            market_bias = "neutral"
-            patterns = ["range_breakout", "sector_rotation"]
-
-        # Pick top 3 sectors by breadth
-        top_sectors = sorted(
-            market_summary.sectors,
-            key=lambda s: s.breadth_score,
-            reverse=True
-        )[:3]
-        focus_sectors = [s.sector for s in top_sectors]
-
-        # Conservative filtering
-        filtering_criteria = FilteringCriteria(
-            volume_ratio_threshold=2.0,
-            distance_from_52w_high_threshold_pct=10.0,
-            min_price_change_5d_pct=2.0
-        )
-
-        logger.warning("Using fallback rule-based guidance (LLM failed)")
-
-        return Stage1Guidance(
-            market_bias=market_bias,
-            focus_sectors=focus_sectors,
-            focus_patterns=patterns,
-            filtering_criteria=filtering_criteria,
-            target_count=100,
-            reasoning="Fallback rule-based guidance due to LLM error"
-        )
-
 
 # Example usage
 if __name__ == "__main__":
@@ -267,7 +221,4 @@ if __name__ == "__main__":
         print(f"  Target count: {guidance.target_count}")
         print(f"  Reasoning: {guidance.reasoning}")
     else:
-        # Use fallback
-        guidance = analyzer.get_fallback_guidance(sample_summary)
-        print(f"\nFallback guidance used:")
-        print(f"  Market bias: {guidance.market_bias}")
+        print("\nStage 1 LLM failed - no guidance available (fallback removed)")

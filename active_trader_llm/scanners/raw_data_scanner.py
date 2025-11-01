@@ -41,16 +41,9 @@ class TechnicalIndicators(BaseModel):
 
     # Momentum indicators
     rsi_14: Optional[float] = None
-    macd: Optional[float] = None
-    macd_signal: Optional[float] = None
-    macd_hist: Optional[float] = None
 
     # Volatility indicators
     atr_14: Optional[float] = None
-    bbands_upper: Optional[float] = None
-    bbands_middle: Optional[float] = None
-    bbands_lower: Optional[float] = None
-    bbands_width: Optional[float] = None
 
     # Volume indicators
     volume_sma_20: Optional[float] = None
@@ -128,20 +121,10 @@ class RawDataScanner:
             # RSI
             df['RSI_14'] = ta.rsi(df['close'], length=14)
 
-            # MACD
-            macd_result = ta.macd(df['close'], fast=12, slow=26, signal=9)
-            if macd_result is not None:
-                df = pd.concat([df, macd_result], axis=1)
-
             # ATR
             atr_result = ta.atr(df['high'], df['low'], df['close'], length=14)
             if atr_result is not None:
                 df['ATR_14'] = atr_result
-
-            # Bollinger Bands
-            bbands_result = ta.bbands(df['close'], length=20, std=2)
-            if bbands_result is not None:
-                df = pd.concat([df, bbands_result], axis=1)
 
             # Volume SMA
             if 'volume' in df.columns:
@@ -157,15 +140,7 @@ class RawDataScanner:
             ema_200 = last_row.get('EMA_200')
 
             rsi_14 = last_row.get('RSI_14')
-            macd = last_row.get('MACD_12_26_9')
-            macd_signal = last_row.get('MACDs_12_26_9')
-            macd_hist = last_row.get('MACDh_12_26_9')
-
             atr_14 = last_row.get('ATR_14')
-            bbands_upper = last_row.get('BBU_20_2.0')
-            bbands_middle = last_row.get('BBM_20_2.0')
-            bbands_lower = last_row.get('BBL_20_2.0')
-            bbands_width = last_row.get('BBB_20_2.0')
 
             volume_sma_20 = last_row.get('Volume_SMA_20')
 
@@ -206,14 +181,7 @@ class RawDataScanner:
                 ema_50=to_float(ema_50),
                 ema_200=to_float(ema_200),
                 rsi_14=to_float(rsi_14),
-                macd=to_float(macd),
-                macd_signal=to_float(macd_signal),
-                macd_hist=to_float(macd_hist),
                 atr_14=to_float(atr_14),
-                bbands_upper=to_float(bbands_upper),
-                bbands_middle=to_float(bbands_middle),
-                bbands_lower=to_float(bbands_lower),
-                bbands_width=to_float(bbands_width),
                 volume_sma_20=to_float(volume_sma_20),
                 current_volume=to_float(current_volume),
                 volume_ratio=to_float(volume_ratio),
@@ -282,13 +250,11 @@ class RawDataScanner:
             "",
             "Momentum:",
             f"  - RSI(14): {indicators.rsi_14:.1f}" if indicators.rsi_14 else "  - RSI(14): N/A",
-            f"  - MACD: {indicators.macd:.3f}, Signal: {indicators.macd_signal:.3f}, Hist: {indicators.macd_hist:.3f}" if indicators.macd else "  - MACD: N/A",
             f"  - 1d change: {indicators.price_change_1d_pct:+.2f}%" if indicators.price_change_1d_pct else "  - 1d change: N/A",
             f"  - 5d change: {indicators.price_change_5d_pct:+.2f}%" if indicators.price_change_5d_pct else "  - 5d change: N/A",
             "",
             "Volatility:",
             f"  - ATR(14): ${indicators.atr_14:.2f}" if indicators.atr_14 else "  - ATR(14): N/A",
-            f"  - Bollinger: Upper=${indicators.bbands_upper:.2f}, Mid=${indicators.bbands_middle:.2f}, Lower=${indicators.bbands_lower:.2f}" if indicators.bbands_upper else "  - Bollinger: N/A",
             "",
             "Volume:",
             f"  - Current vs 20d avg: {indicators.volume_ratio:.2f}x" if indicators.volume_ratio else "  - Volume ratio: N/A",
@@ -325,7 +291,6 @@ if __name__ == "__main__":
         print("\nTechnical Indicators (calculated by pandas_ta):")
         print(f"  Current price: ${indicators.current_price:.2f}")
         print(f"  RSI(14): {indicators.rsi_14:.2f}")
-        print(f"  MACD: {indicators.macd:.3f}")
         print(f"  ATR(14): ${indicators.atr_14:.2f}")
         print(f"  Volume ratio: {indicators.volume_ratio:.2f}x")
         print(f"  % from 52w high: {indicators.pct_from_52w_high:.2f}%")

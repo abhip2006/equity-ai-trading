@@ -40,12 +40,8 @@ CRITICAL: Return ONLY valid JSON matching this exact schema:
     "notes": ["observation 1", "observation 2", "observation 3"]
 }
 
-Regime Definitions:
-- trending_bull: Strong breadth, advancing issues, momentum positive
-- trending_bear: Weak breadth, declining issues, momentum negative
-- range: Mixed breadth, choppy price action, no clear trend
-- risk_off: Market stress, breadth deteriorating rapidly, defensive posture
-
+Analyze the raw market breadth metrics provided and determine which regime best describes current conditions.
+Base your determination on the data itself without relying on fixed thresholds.
 Use breadth metrics holistically. Confidence reflects clarity of regime."""
 
     def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022"):
@@ -55,6 +51,14 @@ Use breadth metrics holistically. Confidence reflects clarity of regime."""
 
     def _build_analysis_prompt(self, market_snapshot: Dict) -> str:
         """Build analysis prompt from market snapshot"""
+        # Get VIX value or None if not provided
+        vix = market_snapshot.get('vix')
+        vix_str = f"{vix:.1f}" if vix is not None else "NOT AVAILABLE"
+
+        # Log warning if VIX is missing
+        if vix is None:
+            logger.warning("VIX data not provided - regime analysis may be less accurate")
+
         prompt = f"""Analyze current market breadth and determine regime.
 
 MARKET BREADTH METRICS:
@@ -63,18 +67,22 @@ MARKET BREADTH METRICS:
 - New Highs: {market_snapshot.get('new_highs', 0)}
 - New Lows: {market_snapshot.get('new_lows', 0)}
 - Up Volume Ratio: {market_snapshot.get('up_volume_ratio', 0.5):.2f}
-- VIX: {market_snapshot.get('vix', 15.0):.1f}
+- VIX: {vix_str}
 
 CURRENT REGIME HINT: {market_snapshot.get('regime_hint', 'unknown')}
+
+{"NOTE: VIX data unavailable - rely more heavily on breadth metrics for regime determination." if vix is None else ""}
 
 Determine the most appropriate regime and provide clear rationale.
 Generate regime JSON:"""
 
         return prompt
 
-    def analyze(self, market_snapshot: Dict) -> BreadthHealthSignal:
+    def analyze(self, market_snapshot: Dict) -> Optional[BreadthHealthSignal]:
         """
         Analyze market breadth and determine regime.
+
+        Returns None if LLM fails (refuses to use hardcoded regime thresholds).
 
         Args:
             market_snapshot: Market-wide breadth and health metrics
@@ -113,40 +121,13 @@ Generate regime JSON:"""
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse breadth analysis: {e}")
             logger.error(f"Response: {content}")
-
-            # Fallback to rule-based regime
-            regime = self._rule_based_regime(market_snapshot)
-            return BreadthHealthSignal(
-                regime=regime,
-                breadth_score=market_snapshot.get('breadth_score', 0.0),
-                confidence=0.5,
-                notes=["Fallback to rule-based regime determination"]
-            )
+            logger.error("Breadth analysis LLM failed - refusing to use hardcoded regime thresholds")
+            return None
 
         except Exception as e:
             logger.error(f"Error in breadth analysis: {e}")
-            regime = self._rule_based_regime(market_snapshot)
-            return BreadthHealthSignal(
-                regime=regime,
-                breadth_score=market_snapshot.get('breadth_score', 0.0),
-                confidence=0.3,
-                notes=[f"Error: {str(e)}"]
-            )
-
-    def _rule_based_regime(self, market_snapshot: Dict) -> Literal["trending_bull", "trending_bear", "range", "risk_off"]:
-        """Simple rule-based regime determination as fallback"""
-        breadth = market_snapshot.get('breadth_score', 0.0)
-        vix = market_snapshot.get('vix', 15.0)
-        ad_ratio = market_snapshot.get('advance_decline_ratio', 1.0)
-
-        if vix > 25 or breadth < -0.6:
-            return "risk_off"
-        elif breadth > 0.5 and ad_ratio > 1.5:
-            return "trending_bull"
-        elif breadth < -0.3 and ad_ratio < 0.7:
-            return "trending_bear"
-        else:
-            return "range"
+            logger.error("Breadth analysis LLM failed - refusing to use hardcoded regime thresholds")
+            return None
 
 
 # Example usage
