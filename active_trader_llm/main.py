@@ -58,18 +58,41 @@ class ActiveTraderLLM:
         self.config = load_config(config_path)
         logger.info(f"Mode: {self.config.mode}")
 
-        # Initialize components
+        # Initialize components with configuration
         self.ingestor = PriceVolumeIngestor(cache_db_path="data/price_cache.db")
-        self.feature_engineer = FeatureEngineer()
+
+        # Pass indicator and regime config to FeatureEngineer
+        indicator_config = self.config.indicators.dict() if hasattr(self.config, 'indicators') else None
+        regime_config = self.config.regime_thresholds.dict() if hasattr(self.config, 'regime_thresholds') else None
+        self.feature_engineer = FeatureEngineer(
+            indicator_config=indicator_config,
+            regime_config=regime_config
+        )
 
         # Initialize analysts
         api_key = self.config.llm.api_key
         model = self.config.llm.model
 
         self.technical_analyst = TechnicalAnalyst(api_key=api_key, model=model)
-        self.breadth_analyst = BreadthHealthAnalyst(api_key=api_key, model=model)
+
+        # Pass regime thresholds to BreadthHealthAnalyst
+        self.breadth_analyst = BreadthHealthAnalyst(
+            api_key=api_key,
+            model=model,
+            regime_config=regime_config
+        )
+
         self.sentiment_analyst = SentimentAnalyst() if self.config.enable_sentiment else None
-        self.macro_analyst = MacroAnalyst() if self.config.enable_macro else None
+
+        # Pass VIX thresholds to MacroAnalyst
+        if self.config.enable_macro:
+            macro_config = self.config.macro_thresholds if hasattr(self.config, 'macro_thresholds') else None
+            self.macro_analyst = MacroAnalyst(
+                vix_risk_off=macro_config.vix_risk_off if macro_config else 25.0,
+                vix_risk_on=macro_config.vix_risk_on if macro_config else 12.0
+            )
+        else:
+            self.macro_analyst = None
 
         # Initialize researchers
         self.researcher_debate = ResearcherDebate(api_key=api_key, model=model)

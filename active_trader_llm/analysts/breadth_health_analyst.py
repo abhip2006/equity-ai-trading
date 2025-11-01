@@ -48,10 +48,28 @@ Regime Definitions:
 
 Use breadth metrics holistically. Confidence reflects clarity of regime."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022"):
-        """Initialize Breadth Health Analyst"""
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022", regime_config: Optional[Dict] = None):
+        """
+        Initialize Breadth Health Analyst.
+
+        Args:
+            api_key: Anthropic API key
+            model: Claude model to use
+            regime_config: Dict with regime thresholds (for fallback classification)
+        """
         self.client = Anthropic(api_key=api_key)
         self.model = model
+
+        # Store regime thresholds for fallback regime determination
+        if regime_config:
+            self.risk_off_breadth = regime_config.get('risk_off_breadth', -0.5)
+            self.trending_bull_breadth = regime_config.get('trending_bull_breadth', 0.5)
+            self.trending_bear_breadth = regime_config.get('trending_bear_breadth', -0.3)
+        else:
+            # Default thresholds
+            self.risk_off_breadth = -0.5
+            self.trending_bull_breadth = 0.5
+            self.trending_bear_breadth = -0.3
 
     def _build_analysis_prompt(self, market_snapshot: Dict) -> str:
         """Build analysis prompt from market snapshot"""
@@ -224,16 +242,21 @@ Generate regime JSON:"""
         )
 
     def _rule_based_regime(self, market_snapshot: Dict) -> Literal["trending_bull", "trending_bear", "range", "risk_off"]:
-        """Simple rule-based regime determination as fallback"""
+        """
+        Simple rule-based regime determination as fallback.
+
+        Uses configured regime thresholds for consistency with main regime classification.
+        """
         breadth = market_snapshot.get('breadth_score', 0.0)
         vix = market_snapshot.get('vix', 15.0)
         ad_ratio = market_snapshot.get('advance_decline_ratio', 1.0)
 
-        if vix > 25 or breadth < -0.6:
+        # Use configured thresholds (consistent with FeatureEngineer regime classification)
+        if vix > 25 or breadth < self.risk_off_breadth:
             return "risk_off"
-        elif breadth > 0.5 and ad_ratio > 1.5:
+        elif breadth > self.trending_bull_breadth and ad_ratio > 1.5:
             return "trending_bull"
-        elif breadth < -0.3 and ad_ratio < 0.7:
+        elif breadth < self.trending_bear_breadth and ad_ratio < 0.7:
             return "trending_bear"
         else:
             return "range"
