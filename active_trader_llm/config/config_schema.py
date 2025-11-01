@@ -29,6 +29,28 @@ class RiskParameters(BaseModel):
     min_net_pl: float = 0.0
 
 
+class TradeValidationConfig(BaseModel):
+    """
+    Trade plan validation configuration.
+
+    Validates LLM-generated trade plans to prevent impossible or dangerous parameters.
+    Checks: price logic, position sizing, risk-reward ratios, price sanity, stop distances.
+    """
+    enabled: bool = True
+    max_position_pct: float = Field(default=10.0, gt=0, le=100, description="Maximum position size as % of capital")
+    min_risk_reward_ratio: float = Field(default=1.5, gt=0, description="Minimum reward/risk ratio")
+    max_price_deviation_pct: float = Field(default=5.0, gt=0, description="Max deviation from current price (%)")
+    min_stop_distance_pct: float = Field(default=0.5, gt=0, description="Minimum stop distance from entry (%)")
+    max_stop_distance_pct: float = Field(default=15.0, gt=0, description="Maximum stop distance from entry (%)")
+
+    @validator('max_stop_distance_pct')
+    def validate_stop_distances(cls, v, values):
+        """Ensure max stop distance is greater than min"""
+        if 'min_stop_distance_pct' in values and v <= values['min_stop_distance_pct']:
+            raise ValueError(f"max_stop_distance_pct ({v}) must be greater than min_stop_distance_pct ({values['min_stop_distance_pct']})")
+        return v
+
+
 class StrategyConfig(BaseModel):
     name: Literal["momentum_breakout", "mean_reversion", "pullback", "sector_rotation"]
     regime: str
@@ -93,6 +115,7 @@ class Config(BaseModel):
     data_sources: DataSourcesConfig = Field(default_factory=DataSourcesConfig)
     scanner: ScannerConfig = Field(default_factory=ScannerConfig)
     risk_parameters: RiskParameters = Field(default_factory=RiskParameters)
+    trade_validation: TradeValidationConfig = Field(default_factory=TradeValidationConfig)
     strategies: List[StrategyConfig] = Field(default_factory=list)
     strategy_switching: StrategySwitchingConfig = Field(default_factory=StrategySwitchingConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)

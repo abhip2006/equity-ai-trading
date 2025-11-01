@@ -76,8 +76,21 @@ class ActiveTraderLLM:
         # Initialize researchers
         self.researcher_debate = ResearcherDebate(api_key=api_key, model=model)
 
-        # Initialize trader
-        self.trader_agent = TraderAgent(api_key=api_key, model=model)
+        # Initialize trader with validation
+        from active_trader_llm.trader.trade_plan_validator import ValidationConfig
+        validation_config = ValidationConfig(
+            max_position_pct=self.config.trade_validation.max_position_pct,
+            min_risk_reward_ratio=self.config.trade_validation.min_risk_reward_ratio,
+            max_price_deviation_pct=self.config.trade_validation.max_price_deviation_pct,
+            min_stop_distance_pct=self.config.trade_validation.min_stop_distance_pct,
+            max_stop_distance_pct=self.config.trade_validation.max_stop_distance_pct
+        )
+        self.trader_agent = TraderAgent(
+            api_key=api_key,
+            model=model,
+            validation_config=validation_config,
+            enable_validation=self.config.trade_validation.enabled
+        )
 
         # Initialize risk manager
         self.risk_manager = RiskManager(self.config.risk_parameters.model_dump())

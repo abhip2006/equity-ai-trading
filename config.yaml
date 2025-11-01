@@ -107,6 +107,16 @@ risk_parameters:
   min_win_rate: 0.35
   min_net_pl: 0.0
 
+# Trade Plan Validation
+# Validates LLM-generated trade plans to prevent impossible or dangerous parameters
+trade_validation:
+  enabled: true                      # Enable trade plan validation
+  max_position_pct: 10.0             # Maximum position size as % of capital
+  min_risk_reward_ratio: 1.5         # Minimum R:R ratio (reward/risk)
+  max_price_deviation_pct: 5.0       # Max deviation from current price (prevents stale prices)
+  min_stop_distance_pct: 0.5         # Minimum stop distance from entry (prevents noise stops)
+  max_stop_distance_pct: 15.0        # Maximum stop distance from entry (prevents excessive risk)
+
 # Trading strategies
 strategies:
   - name: momentum_breakout

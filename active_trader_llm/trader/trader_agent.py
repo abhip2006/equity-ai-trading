@@ -7,6 +7,7 @@ import logging
 from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 from anthropic import Anthropic
+from active_trader_llm.trader.trade_plan_validator import TradePlanValidator, ValidationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +70,26 @@ Decision Making:
 
 Be disciplined and selective. Not every signal requires a trade."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022"):
-        """Initialize trader agent"""
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "claude-3-5-sonnet-20241022",
+        validation_config: Optional[ValidationConfig] = None,
+        enable_validation: bool = True
+    ):
+        """
+        Initialize trader agent
+
+        Args:
+            api_key: Anthropic API key
+            model: LLM model to use
+            validation_config: Trade plan validation configuration
+            enable_validation: Whether to enable trade plan validation
+        """
         self.client = Anthropic(api_key=api_key)
         self.model = model
+        self.enable_validation = enable_validation
+        self.validator = TradePlanValidator(validation_config) if enable_validation else None
 
     def _build_decision_prompt(
         self,
@@ -206,6 +223,24 @@ CURRENT PRICE DATA:
                 reward = plan.entry - plan.take_profit
 
             plan.risk_reward_ratio = reward / risk if risk > 0 else 0.0
+
+            # Validate trade plan before returning
+            if self.enable_validation and self.validator:
+                current_price = analyst_outputs.get('technical', {}).get('price', 0.0)
+
+                is_valid, error_msg = self.validator.validate_trade_plan(
+                    action=plan.direction,
+                    entry=plan.entry,
+                    stop_loss=plan.stop_loss,
+                    take_profit=plan.take_profit,
+                    position_pct=plan.position_size_pct * 100.0,  # Convert to percentage
+                    current_price=current_price,
+                    symbol=symbol
+                )
+
+                if not is_valid:
+                    logger.error(f"Trade plan REJECTED for {symbol}: {error_msg}")
+                    return None
 
             logger.info(f"Trade plan for {symbol}: {plan.direction} {plan.strategy} (R:R {plan.risk_reward_ratio:.2f})")
 
