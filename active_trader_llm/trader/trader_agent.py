@@ -56,10 +56,10 @@ Strategy Selection Guidelines:
 - sector_rotation: Use when breadth mixed, rotate to strongest sectors
 
 Entry/Exit Sizing:
-- Entry should be near current price with slight buffer
-- Stop loss: Use ATR-based stops (1.5-2x ATR below entry for longs)
+- Entry should be near current price (within 5% for most cases)
+- Stop loss: Use ATR-based stops (0.5-3x ATR, typically 1.5-2x for normal volatility)
 - Take profit: Aim for minimum 1.5:1 risk/reward, prefer 2:1+
-- Position size: Respect max_position_pct from risk params (default 0.05)
+- Position size: Respect max_position_pct from risk params (typically 0.5%-10%)
 
 Decision Making:
 - Align strategy with current regime

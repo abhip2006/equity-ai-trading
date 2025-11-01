@@ -1,0 +1,177 @@
+# ActiveTrader-LLM Configuration Example
+# ==========================================
+# This file demonstrates all configurable parameters
+
+mode: backtest  # backtest | paper-live
+
+# ==========================================
+# TECHNICAL INDICATORS
+# ==========================================
+# Customize indicator periods for different trading styles:
+#   - Day trading: RSI(14), MACD(12/26/9), EMA(50/200)  ← Current defaults
+#   - Scalping: RSI(7), MACD(5/13/5), EMA(20/50)
+#   - Swing trading: RSI(21), MACD(24/52/9), EMA(100/200)
+
+indicators:
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  bollinger_period: 20
+  bollinger_std: 2.0
+  atr_period: 14
+  ema_short: 50
+  ema_long: 200
+  sma_period: 20
+
+# ==========================================
+# REGIME CLASSIFICATION THRESHOLDS
+# ==========================================
+# Adjust for different market environments:
+#   - Bull market: Raise thresholds (trending_bull_breadth: 0.7)
+#   - Bear market: Lower thresholds (risk_off_breadth: -0.4)
+#   - Choppy market: Wider range zone (-0.2 to 0.2)
+
+regime_thresholds:
+  risk_off_breadth: -0.5        # Breadth score below this triggers risk_off
+  risk_off_rsi: 35.0            # Average RSI below this also triggers risk_off
+  trending_bull_breadth: 0.5    # Breadth above this suggests trending_bull
+  trending_bull_pct_above_ema200: 0.6  # % of stocks above 200-day EMA for trending_bull
+  trending_bear_breadth: -0.3   # Breadth below this suggests trending_bear
+
+# ==========================================
+# MACRO ANALYST THRESHOLDS
+# ==========================================
+# VIX interpretation varies by market environment:
+#   - 2019 (low vol): vix_risk_off: 20, vix_risk_on: 10
+#   - 2020 (COVID): vix_risk_off: 40, vix_risk_on: 15
+#   - 2024 (normal): vix_risk_off: 25, vix_risk_on: 12  ← Current defaults
+
+macro_thresholds:
+  vix_risk_off: 25.0  # VIX above this = risk-off bias
+  vix_risk_on: 12.0   # VIX below this = risk-on bias
+
+# ==========================================
+# DATA SOURCES
+# ==========================================
+
+data_sources:
+  prices: yfinance
+  interval: 1h  # 1m, 5m, 15m, 1h, 1d
+  universe:
+    - AAPL
+    - MSFT
+    - GOOGL
+    - AMZN
+    - NVDA
+    - TSLA
+    - SPY
+    - QQQ
+  lookback_days: 90  # Days of historical data to fetch
+
+# ==========================================
+# RISK MANAGEMENT
+# ==========================================
+# Risk profiles for different trader types:
+#   - Conservative: max_position_pct: 0.02 (2%), max_daily_drawdown: 0.05 (5%)
+#   - Moderate: max_position_pct: 0.05 (5%), max_daily_drawdown: 0.10 (10%)  ← Current defaults
+#   - Aggressive: max_position_pct: 0.10 (10%), max_daily_drawdown: 0.15 (15%)
+
+risk_parameters:
+  max_position_pct: 0.05           # Max 5% of portfolio per position
+  max_concurrent_positions: 8       # Max number of open positions
+  max_daily_drawdown: 0.10         # Stop trading if lose 10% in a day
+  max_sector_concentration: 0.30    # Max 30% of portfolio in one sector
+  min_win_rate: 0.35               # Min 35% win rate to continue strategy
+  min_net_pl: 0.0                  # Min $0 P/L threshold
+
+# ==========================================
+# STRATEGIES
+# ==========================================
+
+strategies:
+  - name: momentum_breakout
+    regime: trending_bull
+    enabled: true
+
+  - name: mean_reversion
+    regime: range
+    enabled: true
+
+  - name: pullback
+    regime: mild_trend
+    enabled: true
+
+  - name: sector_rotation
+    regime: mixed
+    enabled: true
+
+# ==========================================
+# STRATEGY SWITCHING
+# ==========================================
+# Switching sensitivity:
+#   - Conservative: window: 50, min_win_rate: 0.40, hysteresis: 20  (slower to switch)
+#   - Moderate: window: 30, min_win_rate: 0.35, hysteresis: 10  ← Current defaults
+#   - Aggressive: window: 15, min_win_rate: 0.30, hysteresis: 5  (quick to switch)
+
+strategy_switching:
+  window_trades: 30                 # Evaluate last 30 trades
+  min_win_rate: 0.35               # Min 35% win rate to keep strategy
+  min_net_pl: 0.0                  # Min $0 P/L to keep strategy
+  hysteresis_trades_before_switch: 10  # Wait 10 trades before switching back
+
+  # Strategy selection scoring weights
+  # Formula: score = (win_rate * win_rate_weight) + (min(avg_return, cap) * avg_return_weight) + (avg_rr * avg_rr_weight)
+  #
+  # Different priority profiles:
+  #   - Win rate priority: win_rate_weight: 50, avg_return_weight: 0.5, avg_rr_weight: 10  ← Current
+  #   - Return priority: win_rate_weight: 20, avg_return_weight: 2.0, avg_rr_weight: 15
+  #   - R:R priority: win_rate_weight: 30, avg_return_weight: 0.5, avg_rr_weight: 25
+
+  win_rate_weight: 50.0      # Weight for win rate in scoring
+  avg_return_weight: 0.5     # Weight for average return in scoring
+  avg_return_cap: 100.0      # Cap returns at this value for scoring
+  avg_rr_weight: 10.0        # Weight for average risk/reward ratio
+
+# ==========================================
+# SCHEDULE
+# ==========================================
+
+schedule:
+  decision_interval: 1h  # How often to make trading decisions
+  learning_update: daily  # How often to update strategy performance
+
+# ==========================================
+# COST CONTROL
+# ==========================================
+
+cost_control:
+  combine_symbols_per_prompt: true   # Batch symbols to reduce API calls
+  cache_data: true                   # Cache market data
+  minimize_call_frequency: true      # Reduce LLM call frequency
+  max_cost_per_decision_usd: 0.05   # Max spend per decision cycle
+
+# ==========================================
+# LLM CONFIGURATION
+# ==========================================
+
+llm:
+  provider: anthropic  # anthropic | openai | local
+  model: claude-3-5-sonnet-20241022
+  api_key:  # Set via environment variable ANTHROPIC_API_KEY
+  temperature: 0.3
+  max_tokens: 2000
+
+# ==========================================
+# STORAGE
+# ==========================================
+
+database_path: data/trading.db
+log_path: logs/trade_log.jsonl
+
+# ==========================================
+# FEATURE FLAGS
+# ==========================================
+
+enable_sentiment: false  # Enable sentiment analyst (requires NewsAPI/FinBERT)
+enable_macro: true       # Enable macro analyst (requires VIX data from yfinance)

@@ -50,6 +50,54 @@ class MarketSnapshot(BaseModel):
 class FeatureEngineer:
     """Compute technical indicators and market breadth features"""
 
+    def __init__(self, indicator_config: Optional[Dict] = None, regime_config: Optional[Dict] = None):
+        """
+        Initialize FeatureEngineer with configurable parameters.
+
+        Args:
+            indicator_config: Dict with indicator periods (rsi_period, macd_fast, etc.)
+            regime_config: Dict with regime thresholds (risk_off_breadth, etc.)
+        """
+        # Set indicator periods from config or use defaults
+        if indicator_config:
+            self.rsi_period = indicator_config.get('rsi_period', 14)
+            self.macd_fast = indicator_config.get('macd_fast', 12)
+            self.macd_slow = indicator_config.get('macd_slow', 26)
+            self.macd_signal = indicator_config.get('macd_signal', 9)
+            self.bollinger_period = indicator_config.get('bollinger_period', 20)
+            self.bollinger_std = indicator_config.get('bollinger_std', 2.0)
+            self.atr_period = indicator_config.get('atr_period', 14)
+            self.ema_short = indicator_config.get('ema_short', 50)
+            self.ema_long = indicator_config.get('ema_long', 200)
+            self.sma_period = indicator_config.get('sma_period', 20)
+        else:
+            # Default values (day trading style)
+            self.rsi_period = 14
+            self.macd_fast = 12
+            self.macd_slow = 26
+            self.macd_signal = 9
+            self.bollinger_period = 20
+            self.bollinger_std = 2.0
+            self.atr_period = 14
+            self.ema_short = 50
+            self.ema_long = 200
+            self.sma_period = 20
+
+        # Set regime thresholds from config or use defaults
+        if regime_config:
+            self.risk_off_breadth = regime_config.get('risk_off_breadth', -0.5)
+            self.risk_off_rsi = regime_config.get('risk_off_rsi', 35.0)
+            self.trending_bull_breadth = regime_config.get('trending_bull_breadth', 0.5)
+            self.trending_bull_pct_above_ema200 = regime_config.get('trending_bull_pct_above_ema200', 0.6)
+            self.trending_bear_breadth = regime_config.get('trending_bear_breadth', -0.3)
+        else:
+            # Default values
+            self.risk_off_breadth = -0.5
+            self.risk_off_rsi = 35.0
+            self.trending_bull_breadth = 0.5
+            self.trending_bull_pct_above_ema200 = 0.6
+            self.trending_bear_breadth = -0.3
+
     @staticmethod
     def compute_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
         """Relative Strength Index"""
@@ -135,25 +183,42 @@ class FeatureEngineer:
                 logger.warning(f"Insufficient data for {symbol}: {len(symbol_df)} bars")
                 continue
 
-            # Compute indicators
-            symbol_df['rsi'] = self.compute_rsi(symbol_df['close'])
+            # Compute indicators using configurable periods
+            symbol_df['rsi'] = self.compute_rsi(symbol_df['close'], self.rsi_period)
 
-            macd, signal, hist = self.compute_macd(symbol_df['close'])
+            macd, signal, hist = self.compute_macd(
+                symbol_df['close'],
+                self.macd_fast,
+                self.macd_slow,
+                self.macd_signal
+            )
             symbol_df['macd'] = macd
             symbol_df['macd_signal'] = signal
             symbol_df['macd_hist'] = hist
 
-            symbol_df['ema_50'] = self.compute_ema(symbol_df['close'], 50)
-            symbol_df['ema_200'] = self.compute_ema(symbol_df['close'], 200)
-            symbol_df['sma_20'] = self.compute_sma(symbol_df['close'], 20)
+            symbol_df[f'ema_{self.ema_short}'] = self.compute_ema(symbol_df['close'], self.ema_short)
+            symbol_df[f'ema_{self.ema_long}'] = self.compute_ema(symbol_df['close'], self.ema_long)
+            symbol_df[f'sma_{self.sma_period}'] = self.compute_sma(symbol_df['close'], self.sma_period)
 
-            symbol_df['atr_14'] = self.compute_atr(
+            # For backward compatibility, also store as ema_50, ema_200, sma_20
+            symbol_df['ema_50'] = symbol_df[f'ema_{self.ema_short}']
+            symbol_df['ema_200'] = symbol_df[f'ema_{self.ema_long}']
+            symbol_df['sma_20'] = symbol_df[f'sma_{self.sma_period}']
+
+            symbol_df[f'atr_{self.atr_period}'] = self.compute_atr(
                 symbol_df['high'],
                 symbol_df['low'],
-                symbol_df['close']
+                symbol_df['close'],
+                self.atr_period
             )
+            # For backward compatibility
+            symbol_df['atr_14'] = symbol_df[f'atr_{self.atr_period}']
 
-            bb_upper, bb_middle, bb_lower = self.compute_bollinger_bands(symbol_df['close'])
+            bb_upper, bb_middle, bb_lower = self.compute_bollinger_bands(
+                symbol_df['close'],
+                self.bollinger_period,
+                self.bollinger_std
+            )
             symbol_df['bollinger_upper'] = bb_upper
             symbol_df['bollinger_middle'] = bb_middle
             symbol_df['bollinger_lower'] = bb_lower
@@ -223,16 +288,16 @@ class FeatureEngineer:
         total_volume = sum(f.volume for f in features.values())
         up_volume_ratio = up_volume / max(total_volume, 1)
 
-        # Regime determination
+        # Regime determination using configurable thresholds
         avg_rsi = np.mean([f.rsi for f in features.values()])
         avg_macd_hist = np.mean([f.macd_hist for f in features.values()])
         pct_above_ema200 = sum(1 for f in features.values() if f.close > f.ema_200) / len(features)
 
-        if breadth_score < -0.5 or avg_rsi < 35:
+        if breadth_score < self.risk_off_breadth or avg_rsi < self.risk_off_rsi:
             regime = "risk_off"
-        elif breadth_score > 0.5 and avg_macd_hist > 0 and pct_above_ema200 > 0.6:
+        elif breadth_score > self.trending_bull_breadth and avg_macd_hist > 0 and pct_above_ema200 > self.trending_bull_pct_above_ema200:
             regime = "trending_bull"
-        elif breadth_score < -0.3 and avg_macd_hist < 0:
+        elif breadth_score < self.trending_bear_breadth and avg_macd_hist < 0:
             regime = "trending_bear"
         else:
             regime = "range"

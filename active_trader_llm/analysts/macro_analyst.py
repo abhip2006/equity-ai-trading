@@ -29,9 +29,17 @@ class MacroAnalyst:
     - Commodity prices (oil, gold)
     """
 
-    def __init__(self):
-        """Initialize macro analyst"""
-        logger.info("MacroAnalyst initialized (stub mode)")
+    def __init__(self, vix_risk_off: float = 25.0, vix_risk_on: float = 12.0):
+        """
+        Initialize macro analyst.
+
+        Args:
+            vix_risk_off: VIX threshold for risk-off bias (default 25.0)
+            vix_risk_on: VIX threshold for risk-on bias (default 12.0)
+        """
+        self.vix_risk_off = vix_risk_off
+        self.vix_risk_on = vix_risk_on
+        logger.info(f"MacroAnalyst initialized (VIX thresholds: risk_off>{vix_risk_off}, risk_on<{vix_risk_on})")
 
     def analyze(self, macro_data: Optional[Dict] = None) -> MacroSignal:
         """
@@ -75,18 +83,18 @@ class MacroAnalyst:
         if vix == 15.0:
             logger.warning("⚠️  MACRO ANALYST: VIX=15.0 exactly - this may be default/fake data")
 
-        # Classify based on LIVE VIX data
-        if vix > 25:
+        # Classify based on LIVE VIX data using configurable thresholds
+        if vix > self.vix_risk_off:
             bias = "risk_off"
-            context = [f"VIX elevated at {vix:.1f} (>25 threshold)", "Market stress signals"]
-            confidence = min(0.5 + (vix - 25) / 50, 0.9)  # Higher confidence for higher VIX
-        elif vix < 12:
+            context = [f"VIX elevated at {vix:.1f} (>{self.vix_risk_off} threshold)", "Market stress signals"]
+            confidence = min(0.5 + (vix - self.vix_risk_off) / 50, 0.9)  # Higher confidence for higher VIX
+        elif vix < self.vix_risk_on:
             bias = "risk_on"
-            context = [f"VIX low at {vix:.1f} (<12 threshold)", "Low volatility environment"]
-            confidence = min(0.5 + (12 - vix) / 12, 0.9)
+            context = [f"VIX low at {vix:.1f} (<{self.vix_risk_on} threshold)", "Low volatility environment"]
+            confidence = min(0.5 + (self.vix_risk_on - vix) / self.vix_risk_on, 0.9)
         else:
             bias = "neutral"
-            context = [f"VIX normal at {vix:.1f} (12-25 range)", "Balanced volatility conditions"]
+            context = [f"VIX normal at {vix:.1f} ({self.vix_risk_on}-{self.vix_risk_off} range)", "Balanced volatility conditions"]
             confidence = 0.6
 
         logger.info(f"Macro analysis: {bias} bias (VIX: {vix:.1f}, confidence: {confidence:.2f})")

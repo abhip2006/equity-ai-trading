@@ -147,12 +147,55 @@ class RiskManager:
             reason=reason
         )
 
-    def _calculate_sector_exposure(self, portfolio_state: PortfolioState, trade_plan: 'TradePlan') -> float:
-        """Calculate sector exposure including proposed trade"""
-        # Simplified - in production, fetch sector mappings
-        # For now, assume all tech stocks
-        sector = "Technology"  # Would lookup via yfinance or mapping
+    def _get_sector(self, symbol: str) -> str:
+        """
+        Get sector for a symbol using yfinance.
 
+        Args:
+            symbol: Stock ticker symbol
+
+        Returns:
+            Sector name or 'Unknown' if lookup fails
+        """
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(symbol)
+            sector = ticker.info.get('sector', 'Unknown')
+
+            # Handle ETFs and indices that don't have sector
+            if sector == 'Unknown' or sector is None:
+                # Common index/ETF classifications
+                index_etf_map = {
+                    'SPY': 'Index', 'QQQ': 'Technology Index', 'DIA': 'Index',
+                    'IWM': 'Index', 'VTI': 'Index', 'VOO': 'Index',
+                    'XLF': 'Financials', 'XLE': 'Energy', 'XLK': 'Technology',
+                    'XLV': 'Healthcare', 'XLI': 'Industrials', 'XLP': 'Consumer Staples',
+                    'XLY': 'Consumer Discretionary', 'XLU': 'Utilities', 'XLRE': 'Real Estate',
+                    'XLB': 'Materials', 'XLC': 'Communication Services'
+                }
+                sector = index_etf_map.get(symbol, 'Unknown')
+
+            logger.debug(f"Sector lookup for {symbol}: {sector}")
+            return sector
+
+        except Exception as e:
+            logger.warning(f"Failed to lookup sector for {symbol}: {e}")
+            return 'Unknown'
+
+    def _calculate_sector_exposure(self, portfolio_state: PortfolioState, trade_plan: 'TradePlan') -> float:
+        """
+        Calculate sector exposure including proposed trade.
+
+        Uses live sector data from yfinance to ensure proper diversification.
+        """
+        # Get actual sector for the proposed trade (LIVE DATA)
+        sector = self._get_sector(trade_plan.symbol)
+
+        if sector == 'Unknown':
+            logger.warning(f"Unknown sector for {trade_plan.symbol}, cannot enforce sector limits")
+            return 0.0  # Don't count unknown sectors in concentration
+
+        # Calculate current exposure in this sector
         sector_exposure = sum(
             pos['size_pct']
             for pos in portfolio_state.positions
@@ -161,6 +204,8 @@ class RiskManager:
 
         # Add proposed trade
         sector_exposure += trade_plan.position_size_pct
+
+        logger.debug(f"Sector '{sector}' exposure: {sector_exposure:.1%} (including proposed {trade_plan.position_size_pct:.1%})")
 
         return sector_exposure
 

@@ -218,12 +218,16 @@ class StrategyMonitor:
             else:
                 stats = stats_list[0]
 
-                # Score = weighted combination of metrics
-                # Prioritize win rate and avg return, penalize if recent switch
+                # Score = weighted combination of metrics using configurable weights
+                win_rate_weight = self.config.get('win_rate_weight', 50.0)
+                avg_return_weight = self.config.get('avg_return_weight', 0.5)
+                avg_return_cap = self.config.get('avg_return_cap', 100.0)
+                avg_rr_weight = self.config.get('avg_rr_weight', 10.0)
+
                 score = (
-                    stats.win_rate * 50 +  # Win rate weight
-                    min(stats.avg_return, 100) * 0.5 +  # Return weight (capped)
-                    stats.avg_rr * 10  # Risk/reward weight
+                    stats.win_rate * win_rate_weight +
+                    min(stats.avg_return, avg_return_cap) * avg_return_weight +
+                    stats.avg_rr * avg_rr_weight
                 )
 
                 # Penalize recent switches (hysteresis)
