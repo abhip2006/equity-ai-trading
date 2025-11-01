@@ -134,6 +134,64 @@ Macro:
 
         return prompt
 
+    def _validate_debate(
+        self,
+        bull: BullThesis,
+        bear: BearThesis,
+        analyst_outputs: Dict
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Validate debate against analyst outputs to prevent hallucinations.
+
+        Args:
+            bull: Bull thesis from LLM
+            bear: Bear thesis from LLM
+            analyst_outputs: Actual analyst data (LIVE DATA)
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        # 1. Validate confidence ranges
+        if bull.confidence < 0.0 or bull.confidence > 1.0:
+            return False, f"Bull confidence {bull.confidence} outside valid range [0.0, 1.0]"
+        if bear.confidence < 0.0 or bear.confidence > 1.0:
+            return False, f"Bear confidence {bear.confidence} outside valid range [0.0, 1.0]"
+
+        # 2. Validate thesis points are not empty
+        if not bull.thesis or len(bull.thesis) == 0:
+            return False, "Bull thesis must include at least one point"
+        if not bear.thesis or len(bear.thesis) == 0:
+            return False, "Bear thesis must include at least one point"
+
+        # 3. Validate thesis points are not trivially short
+        if any(len(point) < 10 for point in bull.thesis):
+            return False, "Bull thesis points too short (min 10 chars)"
+        if any(len(point) < 10 for point in bear.thesis):
+            return False, "Bear thesis points too short (min 10 chars)"
+
+        # 4. Sanity check: if technical signal is strongly directional,
+        # the opposing thesis shouldn't be overconfident
+        tech_signal = analyst_outputs.get('technical', {}).get('signal', 'neutral')
+        tech_confidence = analyst_outputs.get('technical', {}).get('confidence', 0.5)
+
+        if tech_signal == 'long' and tech_confidence > 0.8:
+            # Strong bullish technical, bear shouldn't be overconfident
+            if bear.confidence > 0.8:
+                return False, f"Bear overconfident ({bear.confidence:.2f}) despite strong bullish technical signal ({tech_confidence:.2f})"
+
+        elif tech_signal == 'short' and tech_confidence > 0.8:
+            # Strong bearish technical, bull shouldn't be overconfident
+            if bull.confidence > 0.8:
+                return False, f"Bull overconfident ({bull.confidence:.2f}) despite strong bearish technical signal ({tech_confidence:.2f})"
+
+        # 5. Confidences should be somewhat balanced (not both >0.9 or both <0.1)
+        if bull.confidence > 0.9 and bear.confidence > 0.9:
+            return False, f"Both bull ({bull.confidence:.2f}) and bear ({bear.confidence:.2f}) overconfident"
+        if bull.confidence < 0.1 and bear.confidence < 0.1:
+            return False, f"Both bull ({bull.confidence:.2f}) and bear ({bear.confidence:.2f}) underconfident"
+
+        return True, None
+
     def debate(
         self,
         symbol: str,
@@ -155,51 +213,76 @@ Macro:
         """
         prompt = self._build_debate_prompt(symbol, analyst_outputs, market_snapshot, memory_summary)
 
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=800,
-                temperature=0.4,
-                system=self.SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}]
-            )
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=800,
+                    temperature=0.4,
+                    system=self.SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}]
+                )
 
-            content = response.content[0].text.strip()
+                content = response.content[0].text.strip()
 
-            # Handle markdown code blocks
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-                content = content.strip()
+                # Handle markdown code blocks
+                if content.startswith("```"):
+                    content = content.split("```")[1]
+                    if content.startswith("json"):
+                        content = content[4:]
+                    content = content.strip()
 
-            debate_list = json.loads(content)
+                debate_list = json.loads(content)
 
-            if not isinstance(debate_list, list) or len(debate_list) != 2:
-                raise ValueError("Expected JSON array with 2 objects")
+                if not isinstance(debate_list, list) or len(debate_list) != 2:
+                    raise ValueError("Expected JSON array with 2 objects")
 
-            bull_dict = next(d for d in debate_list if d.get('researcher') == 'Bullish')
-            bear_dict = next(d for d in debate_list if d.get('researcher') == 'Bearish')
+                bull_dict = next(d for d in debate_list if d.get('researcher') == 'Bullish')
+                bear_dict = next(d for d in debate_list if d.get('researcher') == 'Bearish')
 
-            bull = BullThesis(**bull_dict)
-            bear = BearThesis(**bear_dict)
+                bull = BullThesis(**bull_dict)
+                bear = BearThesis(**bear_dict)
 
-            logger.info(f"Debate for {symbol}:")
-            logger.info(f"  Bull confidence: {bull.confidence:.2f}")
-            logger.info(f"  Bear confidence: {bear.confidence:.2f}")
+                # CRITICAL: Validate against analyst data to prevent hallucinations
+                is_valid, error_msg = self._validate_debate(bull, bear, analyst_outputs)
 
-            return bull, bear
+                if not is_valid:
+                    logger.warning(f"Debate validation failed for {symbol}: {error_msg}")
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse debate for {symbol}: {e}")
-            logger.error(f"Response: {content}")
+                    if attempt < max_retries - 1:
+                        logger.info(f"Retrying debate (attempt {attempt + 2}/{max_retries})")
+                        prompt += f"\n\nPREVIOUS ATTEMPT FAILED: {error_msg}\nGenerate a valid debate based on the actual analyst signals provided."
+                        continue
+                    else:
+                        logger.error(f"Failed to generate valid debate after {max_retries} attempts, using fallback")
+                        return self._fallback_debate(symbol, analyst_outputs)
 
-            # Fallback
-            return self._fallback_debate(symbol, analyst_outputs)
+                logger.info(f"Debate for {symbol}:")
+                logger.info(f"  Bull confidence: {bull.confidence:.2f}")
+                logger.info(f"  Bear confidence: {bear.confidence:.2f}")
 
-        except Exception as e:
-            logger.error(f"Error in debate for {symbol}: {e}")
-            return self._fallback_debate(symbol, analyst_outputs)
+                return bull, bear
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse debate for {symbol}: {e}")
+                logger.error(f"Response: {content}")
+
+                if attempt < max_retries - 1:
+                    prompt += f"\n\nPREVIOUS ATTEMPT RETURNED INVALID JSON: {e}\nReturn ONLY valid JSON array with 2 objects."
+                    continue
+                else:
+                    return self._fallback_debate(symbol, analyst_outputs)
+
+            except Exception as e:
+                logger.error(f"Error in debate for {symbol}: {e}")
+
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    return self._fallback_debate(symbol, analyst_outputs)
+
+        return self._fallback_debate(symbol, analyst_outputs)
 
     def _fallback_debate(self, symbol: str, analyst_outputs: Dict) -> tuple[BullThesis, BearThesis]:
         """Generate simple rule-based debate as fallback"""

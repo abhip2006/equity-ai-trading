@@ -37,23 +37,60 @@ class SentimentAnalyst:
         Args:
             symbol: Stock symbol
             sentiment_data: Optional pre-fetched sentiment data
+                Required keys: 'sentiment_score' (float, -1 to 1)
+                Optional keys: 'news_sentiment', 'social_sentiment', 'sources'
 
         Returns:
             SentimentSignal with sentiment score
+
+        Raises:
+            ValueError: If sentiment_data is missing (STUB MODE - REQUIRES REAL DATA)
         """
-        # Stub implementation - returns neutral sentiment
+        # CRITICAL: This is a STUB implementation that requires real sentiment data
         # In production, integrate with:
         # - FinBERT for news analysis
         # - Reddit/Twitter APIs for social sentiment
         # - News aggregators (Benzinga, NewsAPI, etc.)
 
-        logger.info(f"Sentiment analysis for {symbol} (stub mode - returning neutral)")
+        if not sentiment_data:
+            logger.error(f"❌ SENTIMENT ANALYST STUB: No sentiment_data provided for {symbol}. This analyst REQUIRES live data integration.")
+            logger.error("   To fix: Integrate FinBERT, NewsAPI, or Reddit sentiment and pass via sentiment_data parameter")
+            raise ValueError(f"SentimentAnalyst requires live sentiment_data for {symbol}. Cannot operate in stub mode without data.")
+
+        sentiment_score = sentiment_data.get('sentiment_score')
+
+        # Validate sentiment_score is present and in valid range
+        if sentiment_score is None:
+            logger.error(f"❌ SENTIMENT ANALYST: 'sentiment_score' key missing from sentiment_data for {symbol}")
+            raise ValueError("sentiment_data must include 'sentiment_score' key with value between -1.0 and 1.0")
+
+        if not isinstance(sentiment_score, (int, float)) or sentiment_score < -1.0 or sentiment_score > 1.0:
+            logger.error(f"❌ SENTIMENT ANALYST: Invalid sentiment_score {sentiment_score} for {symbol} (must be -1.0 to 1.0)")
+            raise ValueError(f"Invalid sentiment_score: {sentiment_score}. Must be float between -1.0 and 1.0")
+
+        # LIVE DATA VALIDATION: Check if sentiment looks like default/fake data
+        if sentiment_score == 0.0:
+            logger.warning(f"⚠️  SENTIMENT ANALYST: Sentiment=0.0 exactly for {symbol} - this may be default/fake data")
+
+        # Extract drivers or use generic
+        drivers = sentiment_data.get('drivers', [])
+        if not drivers:
+            drivers = [f"sentiment_score: {sentiment_score:.2f}"]
+            if 'news_sentiment' in sentiment_data:
+                drivers.append(f"news: {sentiment_data['news_sentiment']:.2f}")
+            if 'social_sentiment' in sentiment_data:
+                drivers.append(f"social: {sentiment_data['social_sentiment']:.2f}")
+
+        # Calculate confidence based on signal strength
+        confidence = min(0.3 + abs(sentiment_score) * 0.5, 0.9)
+
+        logger.info(f"Sentiment analysis for {symbol}: score={sentiment_score:.2f}, confidence={confidence:.2f}")
 
         return SentimentSignal(
             symbol=symbol,
-            sentiment_score=0.0,  # Neutral
-            confidence=0.3,  # Low confidence in stub mode
-            drivers=["headlines: neutral", "social: not available"]
+            sentiment_score=sentiment_score,
+            confidence=confidence,
+            drivers=drivers
         )
 
     def analyze_batch(self, symbols: List[str]) -> Dict[str, SentimentSignal]:

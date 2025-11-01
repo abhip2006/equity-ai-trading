@@ -133,6 +133,75 @@ CURRENT PRICE DATA:
 
         return prompt
 
+    def _validate_trade_plan(
+        self,
+        plan: TradePlan,
+        current_price: float,
+        atr: float
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Validate trade plan against live market data to prevent hallucinations.
+
+        Args:
+            plan: Trade plan from LLM
+            current_price: Current market price (LIVE DATA)
+            atr: Average True Range (LIVE DATA)
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        # 1. Validate entry price is within reasonable range of current price
+        # Allow max 5% deviation from current price
+        max_entry_deviation = current_price * 0.05
+        if abs(plan.entry - current_price) > max_entry_deviation:
+            return False, f"Entry {plan.entry:.2f} too far from current price {current_price:.2f} (max 5% deviation)"
+
+        # 2. Validate stop loss and take profit are on correct side of entry
+        if plan.direction == "long":
+            if plan.stop_loss >= plan.entry:
+                return False, f"Long stop_loss {plan.stop_loss:.2f} must be below entry {plan.entry:.2f}"
+            if plan.take_profit <= plan.entry:
+                return False, f"Long take_profit {plan.take_profit:.2f} must be above entry {plan.entry:.2f}"
+        else:  # short
+            if plan.stop_loss <= plan.entry:
+                return False, f"Short stop_loss {plan.stop_loss:.2f} must be above entry {plan.entry:.2f}"
+            if plan.take_profit >= plan.entry:
+                return False, f"Short take_profit {plan.take_profit:.2f} must be below entry {plan.entry:.2f}"
+
+        # 3. Validate stop loss uses reasonable ATR multiple (0.5x to 3x ATR)
+        if plan.direction == "long":
+            stop_distance = plan.entry - plan.stop_loss
+        else:
+            stop_distance = plan.stop_loss - plan.entry
+
+        atr_multiple = stop_distance / atr if atr > 0 else 0
+        if atr_multiple < 0.5 or atr_multiple > 3.0:
+            return False, f"Stop distance {stop_distance:.2f} is {atr_multiple:.1f}x ATR (should be 0.5-3.0x)"
+
+        # 4. Validate risk/reward calculation
+        if plan.direction == "long":
+            risk = plan.entry - plan.stop_loss
+            reward = plan.take_profit - plan.entry
+        else:
+            risk = plan.stop_loss - plan.entry
+            reward = plan.entry - plan.take_profit
+
+        if risk <= 0:
+            return False, f"Risk must be positive, got {risk:.2f}"
+        if reward <= 0:
+            return False, f"Reward must be positive, got {reward:.2f}"
+
+        calculated_rr = reward / risk
+        # Allow small floating point differences
+        if abs(calculated_rr - plan.risk_reward_ratio) > 0.1:
+            return False, f"Risk/reward mismatch: calculated {calculated_rr:.2f} vs claimed {plan.risk_reward_ratio:.2f}"
+
+        # 5. Validate position size is reasonable (0.5% to 10%)
+        if plan.position_size_pct < 0.005 or plan.position_size_pct > 0.10:
+            return False, f"Position size {plan.position_size_pct:.1%} outside valid range (0.5%-10%)"
+
+        return True, None
+
     def decide(
         self,
         symbol: str,
@@ -156,59 +225,91 @@ CURRENT PRICE DATA:
         Returns:
             TradePlan or None if no trade
         """
+        # Extract live market data for validation
+        current_price = analyst_outputs.get('technical', {}).get('price', 0.0)
+        atr = analyst_outputs.get('technical', {}).get('atr', 1.0)
+
+        if current_price <= 0:
+            logger.error(f"Invalid current price {current_price} for {symbol}")
+            return None
+
         prompt = self._build_decision_prompt(
             symbol, analyst_outputs, researcher_outputs,
             strategy_lib, risk_params, memory_context
         )
 
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=600,
-                temperature=0.3,
-                system=self.SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}]
-            )
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=600,
+                    temperature=0.3,
+                    system=self.SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}]
+                )
 
-            content = response.content[0].text.strip()
+                content = response.content[0].text.strip()
 
-            # Handle markdown
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-                content = content.strip()
+                # Handle markdown
+                if content.startswith("```"):
+                    content = content.split("```")[1]
+                    if content.startswith("json"):
+                        content = content[4:]
+                    content = content.strip()
 
-            # Check for null/no-trade
-            if content.lower() in ['null', 'none', '{}']:
-                logger.info(f"No trade recommended for {symbol}")
+                # Check for null/no-trade
+                if content.lower() in ['null', 'none', '{}']:
+                    logger.info(f"No trade recommended for {symbol}")
+                    return None
+
+                plan_dict = json.loads(content)
+                plan = TradePlan(**plan_dict)
+
+                # Calculate risk/reward
+                if plan.direction == "long":
+                    risk = plan.entry - plan.stop_loss
+                    reward = plan.take_profit - plan.entry
+                else:
+                    risk = plan.stop_loss - plan.entry
+                    reward = plan.entry - plan.take_profit
+
+                plan.risk_reward_ratio = reward / risk if risk > 0 else 0.0
+
+                # CRITICAL: Validate against live market data to prevent hallucinations
+                is_valid, error_msg = self._validate_trade_plan(plan, current_price, atr)
+
+                if not is_valid:
+                    logger.warning(f"Trade plan validation failed for {symbol}: {error_msg}")
+
+                    if attempt < max_retries - 1:
+                        # Retry with error feedback
+                        logger.info(f"Retrying trade plan generation (attempt {attempt + 2}/{max_retries})")
+                        prompt += f"\n\nPREVIOUS ATTEMPT FAILED: {error_msg}\nGenerate a valid trade plan with correct prices."
+                        continue
+                    else:
+                        logger.error(f"Failed to generate valid trade plan after {max_retries} attempts")
+                        return None
+
+                logger.info(f"Trade plan for {symbol}: {plan.direction} {plan.strategy} (R:R {plan.risk_reward_ratio:.2f})")
+
+                return plan
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse trade plan for {symbol}: {e}")
+                logger.error(f"Content: {content}")
+
+                if attempt < max_retries - 1:
+                    prompt += f"\n\nPREVIOUS ATTEMPT RETURNED INVALID JSON: {e}\nReturn ONLY valid JSON matching the schema."
+                    continue
+                else:
+                    return None
+
+            except Exception as e:
+                logger.error(f"Error generating trade plan for {symbol}: {e}")
                 return None
 
-            plan_dict = json.loads(content)
-            plan = TradePlan(**plan_dict)
-
-            # Calculate risk/reward
-            if plan.direction == "long":
-                risk = plan.entry - plan.stop_loss
-                reward = plan.take_profit - plan.entry
-            else:
-                risk = plan.stop_loss - plan.entry
-                reward = plan.entry - plan.take_profit
-
-            plan.risk_reward_ratio = reward / risk if risk > 0 else 0.0
-
-            logger.info(f"Trade plan for {symbol}: {plan.direction} {plan.strategy} (R:R {plan.risk_reward_ratio:.2f})")
-
-            return plan
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse trade plan for {symbol}: {e}")
-            logger.error(f"Content: {content}")
-            return None
-
-        except Exception as e:
-            logger.error(f"Error generating trade plan for {symbol}: {e}")
-            return None
+        return None
 
 
 # Example usage

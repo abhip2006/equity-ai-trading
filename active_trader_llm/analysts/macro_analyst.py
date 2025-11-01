@@ -39,35 +39,62 @@ class MacroAnalyst:
 
         Args:
             macro_data: Optional pre-fetched macro indicators
+                Required keys: 'vix' (float, >0)
+                Optional keys: 'treasury_10y', 'dxy', 'oil_price'
 
         Returns:
             MacroSignal with market bias
+
+        Raises:
+            ValueError: If macro_data is missing or invalid (STUB MODE - REQUIRES REAL DATA)
         """
-        # Stub implementation
-        # In production, fetch:
+        # CRITICAL: This is a STUB implementation that requires real market data
+        # In production, integrate:
         # - VIX from yfinance (^VIX)
         # - Treasury yields from FRED API
         # - Currency/commodity data
         # - Fed policy signals
 
-        vix = macro_data.get('vix', 15.0) if macro_data else 15.0
+        if not macro_data:
+            logger.error("❌ MACRO ANALYST STUB: No macro_data provided. This analyst REQUIRES live data integration.")
+            logger.error("   To fix: Fetch VIX from yfinance and pass via macro_data={'vix': <value>}")
+            raise ValueError("MacroAnalyst requires live macro_data. Cannot operate in stub mode without data.")
 
+        vix = macro_data.get('vix')
+
+        # Validate VIX is present and reasonable
+        if vix is None:
+            logger.error("❌ MACRO ANALYST: 'vix' key missing from macro_data")
+            raise ValueError("macro_data must include 'vix' key with live VIX value")
+
+        if not isinstance(vix, (int, float)) or vix <= 0 or vix > 100:
+            logger.error(f"❌ MACRO ANALYST: Invalid VIX value {vix} (must be 0-100)")
+            raise ValueError(f"Invalid VIX value: {vix}. Must be positive float between 0-100")
+
+        # LIVE DATA VALIDATION: Check if VIX looks like default/fake data
+        if vix == 15.0:
+            logger.warning("⚠️  MACRO ANALYST: VIX=15.0 exactly - this may be default/fake data")
+
+        # Classify based on LIVE VIX data
         if vix > 25:
             bias = "risk_off"
-            context = [f"VIX elevated at {vix:.1f}", "Market stress signals"]
+            context = [f"VIX elevated at {vix:.1f} (>25 threshold)", "Market stress signals"]
+            confidence = min(0.5 + (vix - 25) / 50, 0.9)  # Higher confidence for higher VIX
         elif vix < 12:
             bias = "risk_on"
-            context = ["VIX low", "Complacency or stability"]
+            context = [f"VIX low at {vix:.1f} (<12 threshold)", "Low volatility environment"]
+            confidence = min(0.5 + (12 - vix) / 12, 0.9)
         else:
             bias = "neutral"
-            context = ["VIX normal range", "Balanced conditions"]
+            context = [f"VIX normal at {vix:.1f} (12-25 range)", "Balanced volatility conditions"]
+            confidence = 0.6
 
-        logger.info(f"Macro analysis: {bias} bias (VIX: {vix:.1f})")
+        logger.info(f"Macro analysis: {bias} bias (VIX: {vix:.1f}, confidence: {confidence:.2f})")
 
         return MacroSignal(
             market_context=context,
             bias=bias,
-            confidence=0.5  # Moderate confidence in stub mode
+            confidence=confidence
         )
 
 

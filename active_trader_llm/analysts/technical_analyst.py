@@ -97,6 +97,84 @@ MARKET CONTEXT:
 
         return prompt
 
+    def _validate_signal(
+        self,
+        signal: TechnicalSignal,
+        features: Dict,
+        market_snapshot: Dict
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Validate LLM signal against actual indicator values to prevent hallucinations.
+
+        Args:
+            signal: Signal from LLM
+            features: Actual technical indicator values (LIVE DATA)
+            market_snapshot: Actual market data (LIVE DATA)
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        rsi = features['rsi']
+        macd_hist = features['macd_hist']
+        close = features['close']
+        ema_50 = features['ema_50']
+        ema_200 = features['ema_200']
+
+        # Calculate basic indicator states from LIVE data
+        is_oversold = rsi < 30
+        is_overbought = rsi > 70
+        macd_bullish = macd_hist > 0
+        macd_bearish = macd_hist < 0
+        price_above_ema50 = close > ema_50
+        price_above_ema200 = close > ema_200
+
+        # 1. Check for obvious contradictions
+        if signal.signal == "long":
+            # Long signal should have some bullish indicators
+            bullish_count = sum([
+                is_oversold,
+                macd_bullish,
+                price_above_ema50,
+                price_above_ema200
+            ])
+
+            # If claiming long but all indicators bearish, reject
+            if bullish_count == 0 and signal.confidence > 0.5:
+                return False, f"Long signal with {signal.confidence:.2f} confidence but all indicators bearish (RSI={rsi:.1f}, MACD_hist={macd_hist:.4f}, price below EMAs)"
+
+        elif signal.signal == "short":
+            # Short signal should have some bearish indicators
+            bearish_count = sum([
+                is_overbought,
+                macd_bearish,
+                not price_above_ema50,
+                not price_above_ema200
+            ])
+
+            # If claiming short but all indicators bullish, reject
+            if bearish_count == 0 and signal.confidence > 0.5:
+                return False, f"Short signal with {signal.confidence:.2f} confidence but all indicators bullish (RSI={rsi:.1f}, MACD_hist={macd_hist:.4f}, price above EMAs)"
+
+        # 2. Validate confidence is reasonable (not overconfident with mixed signals)
+        if signal.confidence > 0.9:
+            # Very high confidence requires strong alignment
+            if signal.signal == "long":
+                if rsi > 60 or macd_bearish or not price_above_ema50:
+                    return False, f"Overconfident long signal ({signal.confidence:.2f}) with mixed indicators"
+            elif signal.signal == "short":
+                if rsi < 40 or macd_bullish or price_above_ema50:
+                    return False, f"Overconfident short signal ({signal.confidence:.2f}) with mixed indicators"
+
+        # 3. Validate confidence range
+        if signal.confidence < 0.0 or signal.confidence > 1.0:
+            return False, f"Confidence {signal.confidence} outside valid range [0.0, 1.0]"
+
+        # 4. Validate reasons are not empty
+        if not signal.reasons or len(signal.reasons) == 0:
+            return False, "Signal must include reasoning"
+
+        return True, None
+
     def analyze(
         self,
         symbol: str,
@@ -118,49 +196,82 @@ MARKET CONTEXT:
         """
         prompt = self._build_analysis_prompt(symbol, features, market_snapshot, memory_context)
 
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=500,
-                temperature=0.3,
-                system=self.SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}]
-            )
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=500,
+                    temperature=0.3,
+                    system=self.SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}]
+                )
 
-            # Extract JSON from response
-            content = response.content[0].text.strip()
+                # Extract JSON from response
+                content = response.content[0].text.strip()
 
-            # Handle potential markdown code blocks
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-                content = content.strip()
+                # Handle potential markdown code blocks
+                if content.startswith("```"):
+                    content = content.split("```")[1]
+                    if content.startswith("json"):
+                        content = content[4:]
+                    content = content.strip()
 
-            signal_dict = json.loads(content)
-            signal = TechnicalSignal(**signal_dict)
+                signal_dict = json.loads(content)
+                signal = TechnicalSignal(**signal_dict)
 
-            logger.info(f"Technical analysis for {symbol}: {signal.signal} (confidence: {signal.confidence:.2f})")
-            return signal
+                # CRITICAL: Validate against live indicator data to prevent hallucinations
+                is_valid, error_msg = self._validate_signal(signal, features, market_snapshot)
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse LLM response for {symbol}: {e}")
-            logger.error(f"Response content: {content}")
-            # Return neutral signal as fallback
-            return TechnicalSignal(
-                symbol=symbol,
-                signal="neutral",
-                confidence=0.0,
-                reasons=["Error parsing LLM response"]
-            )
-        except Exception as e:
-            logger.error(f"Error in technical analysis for {symbol}: {e}")
-            return TechnicalSignal(
-                symbol=symbol,
-                signal="neutral",
-                confidence=0.0,
-                reasons=[f"Analysis error: {str(e)}"]
-            )
+                if not is_valid:
+                    logger.warning(f"Signal validation failed for {symbol}: {error_msg}")
+
+                    if attempt < max_retries - 1:
+                        logger.info(f"Retrying analysis (attempt {attempt + 2}/{max_retries})")
+                        prompt += f"\n\nPREVIOUS ATTEMPT FAILED: {error_msg}\nGenerate a signal that matches the actual indicator values provided."
+                        continue
+                    else:
+                        logger.error(f"Failed to generate valid signal after {max_retries} attempts, using neutral")
+                        return TechnicalSignal(
+                            symbol=symbol,
+                            signal="neutral",
+                            confidence=0.3,
+                            reasons=["Unable to generate valid signal matching indicators"]
+                        )
+
+                logger.info(f"Technical analysis for {symbol}: {signal.signal} (confidence: {signal.confidence:.2f})")
+                return signal
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse LLM response for {symbol}: {e}")
+                logger.error(f"Response content: {content}")
+
+                if attempt < max_retries - 1:
+                    prompt += f"\n\nPREVIOUS ATTEMPT RETURNED INVALID JSON: {e}\nReturn ONLY valid JSON matching the schema."
+                    continue
+                else:
+                    return TechnicalSignal(
+                        symbol=symbol,
+                        signal="neutral",
+                        confidence=0.0,
+                        reasons=["Error parsing LLM response"]
+                    )
+
+            except Exception as e:
+                logger.error(f"Error in technical analysis for {symbol}: {e}")
+                return TechnicalSignal(
+                    symbol=symbol,
+                    signal="neutral",
+                    confidence=0.0,
+                    reasons=[f"Analysis error: {str(e)}"]
+                )
+
+        return TechnicalSignal(
+            symbol=symbol,
+            signal="neutral",
+            confidence=0.0,
+            reasons=["Max retries exceeded"]
+        )
 
     def analyze_batch(
         self,
