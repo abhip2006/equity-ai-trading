@@ -1,0 +1,406 @@
+{
+  "project": {
+    "name": "ActiveTrader-LLM",
+    "version": "1.0.0",
+    "description": "Cost-efficient, reasoning-based LLM agent for active stock trading (hours–days horizon). Interval-based decisions (hourly/daily), multi-agent workflow (analyst → researcher debate → trader → risk), memory-driven learning and strategy switching. Inspired by TauricResearch/TradingAgents (multi-agent) and pipiku915/FinMem-LLM-StockTrading (layered memory). No high-frequency or tick-level requirements."
+  },
+  "goals": {
+    "primary": "Maximize P/L net of costs for active trading without HFT.",
+    "secondary": [
+      "Transparent reasoning with JSON logs for every decision.",
+      "Cost control for LLM calls and data usage.",
+      "Continuous learning with memory and strategy switching."
+    ],
+    "out_of_scope": [
+      "Sub-second/tick data, HFT microstructure.",
+      "Complex options/futures execution (extend later).",
+      "Direct live brokerage execution for MVP (paper-trade first)."
+    ]
+  },
+  "operation": {
+    "timeframes": ["1h", "1d"],
+    "decision_cadence": "scheduled (e.g., hourly or daily runs)",
+    "universe_initial": ["AAPL", "MSFT", "SPY", "QQQ"],
+    "modes": ["backtest", "paper-live"],
+    "cost_controls": {
+      "combine_symbols_per_prompt": true,
+      "cache_data": true,
+      "minimize_call_frequency": true,
+      "max_cost_per_decision_usd": 0.05
+    }
+  },
+  "data_layer": {
+    "sources": {
+      "prices": "yfinance (default), pluggable to AlphaVantage/IEX/Polygon",
+      "sentiment": "optional (FinBERT/Reddit/Twitter via CSV or cached API)",
+      "macro": "optional (VIX, rates via public APIs)"
+    },
+    "features": [
+      "SMA, EMA, RSI, MACD, Bollinger Bands, ATR",
+      "Advance/Decline, new highs/lows, up/down volume (breadth_score)",
+      "Volatility proxies (e.g., VIX) and simple macro context"
+    ],
+    "output_schema_example": {
+      "symbol": "AAPL",
+      "timestamp": "2025-10-31T10:00:00",
+      "features": {
+        "rsi": 38.5,
+        "macd": -0.2,
+        "ema_50": 173.4,
+        "ema_200": 176.2,
+        "atr_14": 2.15,
+        "bollinger_bandwidth": 0.12,
+        "breadth_score": -0.35,
+        "sentiment_score": 0.1,
+        "vix": 15.8
+      },
+      "market_snapshot": {
+        "regime_hint": "risk_off|range|trending_bull|trending_bear",
+        "sector_strengths": {
+          "tech": 0.21,
+          "industrials": -0.05
+        }
+      }
+    }
+  },
+  "agents": {
+    "analysts": [
+      {
+        "name": "TechnicalAnalyst",
+        "input": "symbol features + market_snapshot + memory_context",
+        "output_schema": {
+          "analyst": "Technical",
+          "symbol": "AAPL",
+          "signal": "long|short|neutral",
+          "confidence": 0.0,
+          "reasons": ["RSI recovering", "MACD cross", "Volume expansion"],
+          "horizon": "1-3 days"
+        }
+      },
+      {
+        "name": "BreadthHealthAnalyst",
+        "output_schema": {
+          "analyst": "BreadthHealth",
+          "regime": "trending_bull|trending_bear|range|risk_off",
+          "breadth_score": 0.0,
+          "confidence": 0.0,
+          "notes": ["A/D line falling", "New lows expanding"]
+        }
+      },
+      {
+        "name": "SentimentAnalyst (optional)",
+        "output_schema": {
+          "analyst": "Sentiment",
+          "symbol": "AAPL",
+          "sentiment_score": 0.0,
+          "confidence": 0.0,
+          "drivers": ["headlines: neutral", "social: positive"]
+        }
+      },
+      {
+        "name": "MacroAnalyst (optional)",
+        "output_schema": {
+          "analyst": "Macro",
+          "market_context": ["VIX low", "Rates steady"],
+          "bias": "risk_on|risk_off|neutral",
+          "confidence": 0.0
+        }
+      }
+    ],
+    "researchers": [
+      {
+        "name": "BullResearcher",
+        "output_schema": {
+          "researcher": "Bullish",
+          "symbol": "AAPL",
+          "thesis": ["Momentum resuming", "Support held at EMA50"],
+          "confidence": 0.0
+        }
+      },
+      {
+        "name": "BearResearcher",
+        "output_schema": {
+          "researcher": "Bearish",
+          "symbol": "AAPL",
+          "thesis": ["Breadth deteriorating", "Earnings risk"],
+          "confidence": 0.0
+        }
+      }
+    ],
+    "trader": {
+      "name": "TraderAgent",
+      "trade_plan_schema": {
+        "symbol": "AAPL",
+        "strategy": "momentum_breakout|mean_reversion|pullback|sector_rotation",
+        "direction": "long|short",
+        "entry": 175.2,
+        "stop_loss": 172.0,
+        "take_profit": 180.0,
+        "position_size_pct": 0.05,
+        "time_horizon": "1d|3d|1w",
+        "rationale": ["Analyst consensus long", "Regime: trending_bull"]
+      }
+    },
+    "risk_manager": {
+      "name": "RiskManager",
+      "checks": [
+        "max_position_pct",
+        "max_concurrent_positions",
+        "sector_exposure_limits",
+        "correlation_check (optional)",
+        "daily_drawdown_cutoff"
+      ],
+      "decision_schema": {
+        "approved": true,
+        "modifications": {"position_size_pct": 0.03},
+        "reason": "Reduce size due to sector concentration"
+      }
+    }
+  },
+  "strategy_library": {
+    "strategies": [
+      {
+        "name": "momentum_breakout",
+        "suitable_regime": "trending_bull",
+        "entry_rule_hint": "break above N-day high with volume confirmation",
+        "exit_rules_hint": "ATR-based stop; RR >= 1.5 TP"
+      },
+      {
+        "name": "mean_reversion",
+        "suitable_regime": "range",
+        "entry_rule_hint": "RSI<30 bounce or BBand lower pierce & revert",
+        "exit_rules_hint": "Mid-band/EMA target; tight stop"
+      },
+      {
+        "name": "pullback",
+        "suitable_regime": "mild_trend",
+        "entry_rule_hint": "trend intact; buy at EMA pullback",
+        "exit_rules_hint": "prior swing high; ATR stop"
+      },
+      {
+        "name": "sector_rotation",
+        "suitable_regime": "mixed",
+        "entry_rule_hint": "overweight strongest sector, underweight weakest",
+        "exit_rules_hint": "rotate on strength reversal"
+      }
+    ],
+    "switching": {
+      "degradation_rules": {
+        "window_trades": 30,
+        "min_win_rate": 0.35,
+        "min_net_pl": 0.0,
+        "hysteresis_trades_before_switch": 10
+      },
+      "selection_policy": "choose strategy with best recent performance under current regime; penalize frequent switching"
+    }
+  },
+  "memory_learning": {
+    "design": "Layered memory (short-term trades + long-term strategy stats) inspired by FinMem.",
+    "stores": {
+      "short_term": "last N trades with context snapshots",
+      "long_term": "strategy performance aggregates, regime mapping",
+      "regime_history": "daily snapshot of regime signals"
+    },
+    "trade_log_schema": {
+      "trade_id": "uuid",
+      "timestamp": "2025-10-31T10:00:00",
+      "symbol": "AAPL",
+      "strategy": "momentum_breakout",
+      "context_features": {},
+      "analyst_outputs": [],
+      "researcher_outputs": [],
+      "decision": {},
+      "risk_review": {},
+      "execution": {"filled_price": 175.3, "slippage": 0.02},
+      "outcome": {"p_l": 250.0, "rr": 1.7, "duration": "2d"},
+      "lessons": ["breakouts worked in trending_bull"],
+      "memory_updates": ["increment momentum stats"]
+    },
+    "learning_cadence": "daily",
+    "metrics": ["win_rate", "avg_return", "drawdown", "Sharpe_proxy", "RR"],
+    "actions": ["re-rank strategies", "adjust sizing bounds", "switch strategy if degraded"]
+  },
+  "workflow": [
+    "Fetch latest data for universe (hourly/daily).",
+    "Compute indicators and breadth features.",
+    "Run Analyst Agents → structured JSON signals.",
+    "Run Researcher debate → bullish vs bearish JSON.",
+    "TraderAgent synthesizes → trade plan(s).",
+    "RiskManager validates/adjusts → decision.",
+    "Execute (paper) + log reasoning.",
+    "End-of-day Learning: update memory, re-rank strategies."
+  ],
+  "metrics_kpis": [
+    {"name": "net_pl", "target": "positive over 3-month sim"},
+    {"name": "max_drawdown", "target": "< 10%"},
+    {"name": "win_rate_improvement", "target": "+10% after 50 trades"},
+    {"name": "decision_cost_usd", "target": "<= 0.05"},
+    {"name": "reasoning_coverage", "target": "100% decisions logged"}
+  ],
+  "constraints": [
+    "No HFT; minimum bar = 1h (prefer 1h/1d).",
+    "Public/low-cost data preferred.",
+    "Paper trade until KPIs are met."
+  ],
+  "acceptance_criteria": [
+    "End-to-end backtest runs with identical pipeline as paper-live.",
+    "Trade logs include full JSON reasoning and outcomes.",
+    "Strategy switching triggers when thresholds are breached.",
+    "Configurable schedules for decision and learning cadences.",
+    "All modules unit-tested for core logic stubs."
+  ],
+  "tech_stack": {
+    "language": "Python 3.11",
+    "libs": ["pandas", "numpy", "ta", "yfinance", "pydantic", "sqlalchemy (optional)", "uvicorn+FastAPI (optional API)"],
+    "storage": ["SQLite (default)", "JSON logs"],
+    "llm": "pluggable (OpenAI/Claude/local); batch prompts; structured JSON outputs"
+  },
+  "config_template_yaml": "data_sources:\\n  prices: yfinance\\n  interval: 1h\\n  universe: [AAPL, MSFT, SPY, QQQ]\\nrisk_parameters:\\n  max_position_pct: 0.05\\n  max_concurrent_positions: 8\\n  max_daily_drawdown: 0.1\\nstrategies:\\n  - name: momentum_breakout\\n    regime: trending_bull\\n  - name: mean_reversion\\n    regime: range\\n  - name: pullback\\n    regime: mild_trend\\n  - name: sector_rotation\\n    regime: mixed\\nschedule:\\n  decision_interval: 1h\\n  learning_update: daily\\nmode: backtest",
+  "repo_layout": [
+    "active_trader_llm/",
+    "  config/",
+    "  data_ingestion/",
+    "  feature_engineering/",
+    "  analysts/",
+    "  researchers/",
+    "  trader/",
+    "  risk/",
+    "  learning/",
+    "  memory/",
+    "  backtest/",
+    "  utils/",
+    "  main.py",
+    "  README.md"
+  ],
+  "codegen_tasks": [
+    {
+      "path": "data_ingestion/price_volume_ingestor.py",
+      "brief": "Fetch hourly/daily OHLCV for a universe from yfinance; cache to SQLite/CSV.",
+      "requirements": [
+        "Function: fetch_prices(universe, interval, lookback_days) -> pandas.DataFrame",
+        "Graceful retry, rate limit handling, caching",
+        "Unit test stub with sample symbols"
+      ]
+    },
+    {
+      "path": "feature_engineering/indicators.py",
+      "brief": "Compute SMA/EMA/RSI/MACD/Bollinger/ATR and market breadth features.",
+      "requirements": [
+        "Function: build_features(price_df) -> dict[symbol]->feature_dict",
+        "Include breadth_score and regime_hint calculation",
+        "Pydantic models for validation"
+      ]
+    },
+    {
+      "path": "analysts/technical_analyst.py",
+      "brief": "LLM/stub logic to produce technical signal/confidence with reasons.",
+      "requirements": [
+        "Class TechnicalAnalyst.analyse(symbol, features, market_snapshot, memory_ctx) -> dict(JSON)",
+        "Return exactly the output_schema specified in agents.analysts[0]"
+      ]
+    },
+    {
+      "path": "analysts/breadth_health_analyst.py",
+      "brief": "Determine market regime and breadth confidence.",
+      "requirements": [
+        "Class BreadthHealthAnalyst.analyse(market_snapshot) -> dict(JSON)"
+      ]
+    },
+    {
+      "path": "researchers/bull_bear.py",
+      "brief": "Bull & Bear researchers debate using analyst outputs + memory.",
+      "requirements": [
+        "Functions: bull_thesis(...)->JSON, bear_thesis(...)->JSON",
+        "Combine multiple symbols per call to save cost (batching helper)"
+      ]
+    },
+    {
+      "path": "trader/trader_agent.py",
+      "brief": "Synthesize signals into trade plans with strategy selection.",
+      "requirements": [
+        "Function: decide(symbols, analyst_outputs, researcher_outputs, strategy_lib, memory_ctx) -> list[trade_plan]",
+        "Position sizing based on risk parameters",
+        "Stop/target via ATR or rule hints"
+      ]
+    },
+    {
+      "path": "risk/risk_manager.py",
+      "brief": "Validate/adjust trade plan under portfolio constraints.",
+      "requirements": [
+        "Function: evaluate(trade_plan, portfolio_state, risk_params) -> decision_schema",
+        "Implement max_position_pct, max_concurrent_positions, daily_drawdown"
+      ]
+    },
+    {
+      "path": "learning/strategy_monitor.py",
+      "brief": "Track rolling performance and trigger strategy switches.",
+      "requirements": [
+        "Functions: log_trade(...), compute_metrics(...), monitor_and_switch(...)->actions",
+        "Windowed stats: win_rate, net_pl, drawdown"
+      ]
+    },
+    {
+      "path": "memory/memory_manager.py",
+      "brief": "Short-term/Long-term memory with SQLite.",
+      "requirements": [
+        "Classes: ShortTermMemory, LongTermMemory",
+        "APIs: get_context(query), update(entry), aggregates by strategy"
+      ]
+    },
+    {
+      "path": "backtest/backtest.py",
+      "brief": "Historical simulation using full pipeline (no HFT).",
+      "requirements": [
+        "CLI args: --start --end --interval --universe --config",
+        "Outputs: CSV metrics + JSON trade logs + strategy attribution"
+      ]
+    },
+    {
+      "path": "utils/logging_json.py",
+      "brief": "JSON logging utilities for decisions and outcomes.",
+      "requirements": [
+        "Function: log_decision(...), log_execution(...), log_outcome(...)",
+        "Write to trade_log.json lines"
+      ]
+    },
+    {
+      "path": "main.py",
+      "brief": "Entry point to run backtest or paper-live with schedules.",
+      "requirements": [
+        "Load config, instantiate modules, run scheduled loops",
+        "Batch symbols per LLM call to minimize cost",
+        "Ensure identical code paths for backtest vs paper"
+      ]
+    },
+    {
+      "path": "README.md",
+      "brief": "Setup/run instructions, config example, KPIs, cost tips.",
+      "requirements": [
+        "Document decision cadence, memory, strategy switching",
+        "Explain batching and caching for cost control"
+      ]
+    }
+  ],
+  "llm_prompts": {
+    "style": "Return STRICT JSON that matches provided schemas. No prose.",
+    "technical_analyst_prompt": "You are TechnicalAnalyst. Given numeric features (RSI, MACD, EMA relationships, ATR, Bollinger) and a market_snapshot/regime_hint, output a JSON decision: {analyst:'Technical', symbol:'', signal:'long|short|neutral', confidence:0..1, reasons:[...], horizon:'1-3 days'}. Avoid overfitting; align with regime when relevant.",
+    "researcher_batch_prompt": "You are two researchers: Bullish and Bearish. For each symbol payload, produce two JSONs arguing for and against a trade using analyst outputs + memory summaries. Keep to the schemas. Consider regime, breadth, and risk.",
+    "trader_selection_prompt": "You are TraderAgent. Combine analyst and researcher JSONs with strategy library metadata and recent performance to select a strategy, direction, entry/stop/target, and position_size_pct. Respect risk params and regime suitability. Output strictly trade_plan schema."
+  },
+  "tests": {
+    "unit": [
+      "Indicators compute deterministic values on sample data",
+      "RiskManager rejects oversize positions",
+      "StrategyMonitor triggers switch after thresholds"
+    ],
+    "integration": [
+      "Backtest end-to-end on 6 months 1h bars with 4 symbols",
+      "Trade logs contain all required JSON blocks"
+    ]
+  },
+  "milestones": [
+    {"phase": "MVP", "weeks": 3, "deliverables": ["data_ingestion", "technical_analyst", "trader", "risk", "backtest"]},
+    {"phase": "Analyst+Debate", "weeks": 4, "deliverables": ["breadth_analyst", "researchers", "memory"]},
+    {"phase": "Learning+Switching", "weeks": 4, "deliverables": ["strategy_monitor", "reports", "paper-live loop"]}
+  ]
+}

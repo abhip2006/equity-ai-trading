@@ -1,0 +1,75 @@
+# ActiveTrader-LLM Configuration
+# Cost-efficient, reasoning-based LLM agent for active stock trading
+
+mode: backtest  # backtest | paper-live
+
+# Data sources
+data_sources:
+  prices: yfinance
+  interval: 1h  # 1h, 1d, 5m, 15m
+  universe:
+    - AAPL
+    - MSFT
+    - SPY
+    - QQQ
+  lookback_days: 90
+
+# Risk parameters
+risk_parameters:
+  max_position_pct: 0.05  # 5% max per position
+  max_concurrent_positions: 8
+  max_daily_drawdown: 0.10  # 10% daily stop
+  max_sector_concentration: 0.30
+  min_win_rate: 0.35
+  min_net_pl: 0.0
+  min_risk_reward: 1.5  # Minimum R:R ratio
+
+# Trading strategies
+strategies:
+  - name: momentum_breakout
+    regime: trending_bull
+    enabled: true
+  - name: mean_reversion
+    regime: range
+    enabled: true
+  - name: pullback
+    regime: mild_trend
+    enabled: true
+  - name: sector_rotation
+    regime: mixed
+    enabled: true
+
+# Strategy switching
+strategy_switching:
+  window_trades: 30  # Evaluate last 30 trades
+  min_win_rate: 0.35
+  min_net_pl: 0.0
+  hysteresis_trades_before_switch: 10  # Cooldown period
+
+# Scheduling
+schedule:
+  decision_interval: 1h  # How often to make decisions
+  learning_update: daily  # How often to update strategy stats
+
+# Cost controls
+cost_control:
+  combine_symbols_per_prompt: true
+  cache_data: true
+  minimize_call_frequency: true
+  max_cost_per_decision_usd: 0.05
+
+# LLM configuration
+llm:
+  provider: anthropic  # anthropic | openai | local
+  model: claude-3-5-sonnet-20241022
+  api_key: ${ANTHROPIC_API_KEY}  # Use environment variable
+  temperature: 0.3
+  max_tokens: 2000
+
+# Storage paths
+database_path: data/trading.db
+log_path: logs/trade_log.jsonl
+
+# Feature flags
+enable_sentiment: false  # Enable sentiment analysis (requires additional setup)
+enable_macro: false      # Enable macro analysis (requires additional data)
