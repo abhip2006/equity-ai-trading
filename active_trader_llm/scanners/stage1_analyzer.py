@@ -63,39 +63,7 @@ CRITICAL: Return ONLY valid JSON matching this exact schema, NO prose:
     "reasoning": "Brief explanation of market conditions and why these filters make sense"
 }
 
-INTERPRETATION GUIDELINES:
-
-Market Bias:
-- breadth_score > 0.3 → bullish (most stocks above MA200)
-- breadth_score < -0.3 → bearish
-- else → neutral
-- Consider sector strength distribution
-
-Focus Sectors:
-- Pick 2-4 sectors showing strongest breadth + price momentum
-- Look at avg_price_change_5d_pct and pct_above_ma50
-- Prefer sectors with high avg_volume_ratio (institutional interest)
-
-Focus Patterns:
-- Bullish bias → ["breakouts", "momentum"]
-- Bearish bias → ["mean_reversion", "oversold_bounce"]
-- Neutral → ["range_breakout", "sector_rotation"]
-
-Filtering Criteria (adapt to market):
-- Strong market → tighter filters (higher thresholds)
-  - volume_ratio_threshold: 2.5-3.0
-  - distance_from_52w_high_threshold_pct: 5-7%
-  - min_price_change_5d_pct: 3-5%
-- Weak market → looser filters
-  - volume_ratio_threshold: 1.8-2.2
-  - distance_from_52w_high_threshold_pct: 10-15%
-  - min_price_change_5d_pct: 1-2%
-
-Target Count:
-- Aim for 80-120 candidates for Stage 2 deep analysis
-- Adjust based on how selective you want to be
-
-Remember: You are NOT calculating anything. You are interpreting already-calculated data."""
+You are NOT calculating anything. You are interpreting already-calculated data."""
 
     def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022", temperature: float = 0.3):
         """
@@ -124,12 +92,12 @@ Remember: You are NOT calculating anything. You are interpreting already-calcula
 
 MARKET OVERVIEW (pre-calculated):
 - Total stocks analyzed: {market_summary.total_stocks}
-- Market breadth score: {market_summary.market_breadth_score:.2f} (-1=bearish, +1=bullish)
+- Market breadth score: {market_summary.market_breadth_score:.2f}
 - Average 5d price change: {market_summary.avg_price_change_5d_pct:.2f}%
 - Stocks above MA50: {market_summary.pct_stocks_above_ma50:.1f}%
 - Stocks above MA200: {market_summary.pct_stocks_above_ma200:.1f}%
-- High volume stocks (>2x avg): {market_summary.high_volume_count}
-- Near 52-week high (<5% away): {market_summary.near_52w_high_count}
+- High volume stocks: {market_summary.high_volume_count}
+- Near 52-week high: {market_summary.near_52w_high_count}
 
 SECTOR BREAKDOWN (top sectors by stock count):
 """

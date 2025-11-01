@@ -58,7 +58,7 @@ Use breadth metrics holistically. Confidence reflects clarity of regime."""
         prompt = f"""Analyze current market breadth and determine regime.
 
 MARKET BREADTH METRICS:
-- Breadth Score: {market_snapshot['breadth_score']:.2f} (-1=bearish, +1=bullish)
+- Breadth Score: {market_snapshot['breadth_score']:.2f}
 - Advance/Decline Ratio: {market_snapshot.get('advance_decline_ratio', 1.0):.2f}
 - New Highs: {market_snapshot.get('new_highs', 0)}
 - New Lows: {market_snapshot.get('new_lows', 0)}

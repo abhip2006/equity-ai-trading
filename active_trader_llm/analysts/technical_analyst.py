@@ -42,15 +42,7 @@ CRITICAL: Return ONLY valid JSON matching this exact schema, NO prose or explana
     "horizon": "1-3 days"
 }
 
-Guidelines:
-- RSI <30 = oversold (potential long), RSI >70 = overbought (potential short)
-- MACD crossover (hist > 0) = bullish, crossunder (hist < 0) = bearish
-- Price above EMA50 and EMA200 = uptrend, below both = downtrend
-- Bollinger bandwidth expansion = increased volatility/opportunity
-- ATR shows volatility level for stop-loss sizing
-- Align with market regime when relevant (trending_bull favors longs, etc.)
-- Confidence should reflect conviction based on indicator alignment
-- Be concise in reasons (3-5 bullet points max)
+Analyze the pre-calculated indicators and determine your trading signal. Be concise in reasons (3-5 bullet points max).
 
 Avoid overfitting to single indicators. Look for confluence."""
 
@@ -86,7 +78,7 @@ TECHNICAL INDICATORS:
 
 MARKET CONTEXT:
 - Regime: {market_snapshot['regime_hint']}
-- Breadth Score: {market_snapshot['breadth_score']:.2f} (-1=bearish, +1=bullish)
+- Breadth Score: {market_snapshot['breadth_score']:.2f}
 - A/D Ratio: {market_snapshot.get('advance_decline_ratio', 1.0):.2f}
 """
 

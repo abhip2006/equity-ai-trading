@@ -67,33 +67,12 @@ CRITICAL: Return ONLY valid JSON matching this exact schema, NO prose:
     "batch_summary": "Brief summary of market conditions in this batch"
 }
 
-INTERPRETATION GUIDELINES:
-
-What Makes a Stock Favorable:
-1. Confluence of multiple indicators pointing same direction
-2. Clear pattern match with Stage 1 focus patterns
-3. Strong volume confirmation (>2x average)
-4. Proper positioning vs moving averages
-5. Momentum aligned with trend
-
-Pattern Identification (based on focus_patterns from Stage 1):
-- **Breakouts**: Price above SMA20/EMA50, increasing volume, RSI 50-70
-- **Momentum**: Positive MACD histogram, RSI >55, price >EMA50, strong volume
-- **Mean Reversion**: RSI <30 or >70, price at Bollinger extremes, divergence setup
-- **Pullback**: Price near EMA50 in uptrend, RSI 40-50, MACD still positive
-
-Confidence Scoring:
-- 0.9+: Perfect alignment, multiple confirmations
-- 0.7-0.9: Strong setup, minor weakness
-- 0.5-0.7: Decent setup, mixed signals
-- <0.5: Weak setup, conflicting indicators
-
 CRITICAL RULES:
 1. You are NOT calculating indicators - they are already calculated
 2. You are INTERPRETING pre-calculated values
 3. Be selective - only mark favorable if genuinely good setup
 4. Consider Stage 1 guidance (market bias, focus patterns)
-5. Look for confluence, not single indicators"""
+5. Look for confluence of multiple indicators"""
 
     def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022", temperature: float = 0.3):
         """
@@ -334,24 +313,7 @@ if __name__ == "__main__":
         reasoning="Bullish market favoring tech breakouts"
     )
 
-    # Sample indicators
-    sample_indicators = {
-        "AAPL": TechnicalIndicators(
-            symbol="AAPL",
-            current_price=175.0,
-            rsi_14=65.0,
-            macd=1.5,
-            macd_signal=1.2,
-            macd_hist=0.3,
-            ema_50=170.0,
-            ema_200=165.0,
-            pct_from_ema50=2.9,
-            pct_from_ema200=6.1,
-            volume_ratio=3.2,
-            price_change_5d_pct=4.5,
-            pct_from_52w_high=-3.5
-        )
-    }
+   
 
     analyzer = Stage2Analyzer(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
