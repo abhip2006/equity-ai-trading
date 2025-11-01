@@ -57,8 +57,11 @@ class FeatureEngineer:
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
 
-        rs = gain / loss
+        # Handle division by zero when loss = 0 (strong uptrend with no down days)
+        rs = gain / loss.replace(0, np.nan)
         rsi = 100 - (100 / (1 + rs))
+        # Fill NaN values with neutral RSI (50) when calculation undefined
+        rsi = rsi.fillna(50.0)
         return rsi
 
     @staticmethod
@@ -157,7 +160,9 @@ class FeatureEngineer:
             symbol_df['bollinger_upper'] = bb_upper
             symbol_df['bollinger_middle'] = bb_middle
             symbol_df['bollinger_lower'] = bb_lower
-            symbol_df['bollinger_bandwidth'] = (bb_upper - bb_lower) / bb_middle
+            # Avoid division by zero when middle band is zero (rare but possible with corrupted data)
+            symbol_df['bollinger_bandwidth'] = (bb_upper - bb_lower) / bb_middle.replace(0, np.nan)
+            symbol_df['bollinger_bandwidth'] = symbol_df['bollinger_bandwidth'].fillna(0.1)
 
             # Get latest row
             latest = symbol_df.iloc[-1]
@@ -209,19 +214,42 @@ class FeatureEngineer:
         # Advance/Decline calculation (simplified)
         advances = sum(1 for f in features.values() if f.close > f.ema_50)
         declines = len(features) - advances
-        ad_ratio = advances / max(declines, 1)
+
+        # Proper handling of zero declines (all stocks advancing)
+        if declines > 0:
+            ad_ratio = advances / declines
+        elif advances > 0:
+            ad_ratio = float('inf')  # All advancing, no declines
+        else:
+            ad_ratio = 1.0  # No stocks, neutral
 
         # Breadth score: -1 (bearish) to +1 (bullish)
         breadth_score = (advances - declines) / len(features)
 
-        # New highs/lows (simplified: use 20-day high/low)
-        new_highs = sum(1 for f in features.values() if f.close >= f.high * 0.99)
-        new_lows = sum(1 for f in features.values() if f.close <= f.low * 1.01)
+        # Calculate actual new highs/lows from price history
+        # A stock is at a "new high" if current close is within 2% of its period high
+        new_highs = 0
+        new_lows = 0
+
+        for symbol in features.keys():
+            symbol_data = price_df[price_df['symbol'] == symbol].tail(252)  # ~1 year of data or less
+            if len(symbol_data) > 20:  # Need minimum data
+                recent_high = symbol_data['high'].max()
+                recent_low = symbol_data['low'].min()
+                current_close = features[symbol].close
+
+                # Within 2% of period high = new high, within 2% of period low = new low
+                if current_close >= recent_high * 0.98:
+                    new_highs += 1
+                if current_close <= recent_low * 1.02:
+                    new_lows += 1
 
         # Up/Down volume (simplified)
         up_volume = sum(f.volume for f in features.values() if f.close > f.open)
         total_volume = sum(f.volume for f in features.values())
-        up_volume_ratio = up_volume / max(total_volume, 1)
+
+        # Proper handling of zero volume
+        up_volume_ratio = up_volume / total_volume if total_volume > 0 else 0.5
 
         # Regime determination
         avg_rsi = np.mean([f.rsi for f in features.values()])
