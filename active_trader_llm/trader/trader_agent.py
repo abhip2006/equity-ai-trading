@@ -60,15 +60,15 @@ OUTPUT FORMAT - Return valid JSON:
     "entry": 0.0,
     "stop_loss": 0.0,
     "take_profit": 0.0,
-    "position_size_pct": 0.0-0.10,
+    "position_size_pct": 0.03-0.10,  // DECIMAL format: 0.03=3%, 0.05=5%, 0.07=7%, 0.10=10%
     "time_horizon": "1d|3d|1w",
     "confidence": 0.0-1.0,
     "invalidation_condition": "Specific price/indicator condition that would invalidate this trade",
-    "rationale": "Chain-of-thought explaining your full reasoning process"
+    "rationale": "Single-line chain-of-thought explaining your full reasoning process (no newlines)"
 }
 
 RISK MANAGEMENT (for executing trades):
-- Position size: Typically 3-7% per trade, up to 10% for high-conviction setups
+- Position size: Typically 3-7% per trade, up to 10% for high-conviction setups (use DECIMAL: 0.03-0.07 typical, 0.10 max)
 - Stop loss: Use ATR-based stops (1.5-2.5x ATR) or key support/resistance
 - Take profit: Aim for 1.5:1 to 3:1 risk/reward based on market structure
 - Invalidation: Define clear conditions where your thesis is wrong
@@ -194,6 +194,48 @@ Average RSI Across Universe: {breadth.get('avg_rsi', 0):.1f}
 % of Stocks Above 200-day SMA: {breadth.get('pct_above_sma200_daily', 0)*100:.1f}%
 % of Stocks Above 50-week SMA: {breadth.get('pct_above_sma50_weekly', 0)*100:.1f}%
 """
+
+        # Macro-economic data (RAW DATA ONLY)
+        if 'macro' in analyst_outputs:
+            macro = analyst_outputs['macro']
+            prompt += "\n--- MACRO-ECONOMIC DATA (Raw Values) ---\n"
+
+            # Volatility environment
+            if macro.get('vix') is not None:
+                prompt += f"VIX (S&P 500 Volatility): {macro.get('vix'):.2f}\n"
+            if macro.get('vxn') is not None:
+                prompt += f"VXN (Nasdaq Volatility): {macro.get('vxn'):.2f}\n"
+            if macro.get('move_index') is not None:
+                prompt += f"MOVE Index (Treasury Volatility): {macro.get('move_index'):.2f}\n"
+
+            # Interest rates
+            if macro.get('treasury_10y') is not None or macro.get('treasury_2y') is not None:
+                prompt += "\n"
+            if macro.get('treasury_10y') is not None:
+                prompt += f"10-Year Treasury Yield: {macro.get('treasury_10y'):.2f}%\n"
+            if macro.get('treasury_2y') is not None:
+                prompt += f"2-Year Treasury Yield: {macro.get('treasury_2y'):.2f}%\n"
+            if macro.get('yield_curve_spread') is not None:
+                prompt += f"Yield Curve Spread (10Y-2Y): {macro.get('yield_curve_spread'):+.2f}%\n"
+
+            # Commodities & currency
+            if any(macro.get(k) is not None for k in ['gold_price', 'oil_price', 'dollar_index']):
+                prompt += "\n"
+            if macro.get('gold_price') is not None:
+                prompt += f"Gold: ${macro.get('gold_price'):.2f}/oz\n"
+            if macro.get('oil_price') is not None:
+                prompt += f"Crude Oil: ${macro.get('oil_price'):.2f}/barrel\n"
+            if macro.get('dollar_index') is not None:
+                prompt += f"US Dollar Index (DXY): {macro.get('dollar_index'):.2f}\n"
+
+            # NYSE breadth (if available)
+            if macro.get('nyse_advancing') is not None and macro.get('nyse_declining') is not None:
+                prompt += f"\nNYSE Advancing: {macro.get('nyse_advancing'):,}\n"
+                prompt += f"NYSE Declining: {macro.get('nyse_declining'):,}\n"
+                if macro.get('nyse_new_highs') is not None:
+                    prompt += f"NYSE New Highs: {macro.get('nyse_new_highs'):,}\n"
+                if macro.get('nyse_new_lows') is not None:
+                    prompt += f"NYSE New Lows: {macro.get('nyse_new_lows'):,}\n"
 
         # Existing position context (if any)
         if existing_position:

@@ -27,10 +27,10 @@ from active_trader_llm.config.loader import load_config
 from active_trader_llm.data_ingestion.price_volume_ingestor import PriceVolumeIngestor
 from active_trader_llm.data_ingestion.macro_data_ingestor import MacroDataIngestor
 from active_trader_llm.feature_engineering.feature_builder import FeatureBuilder
-from active_trader_llm.analysts.technical_analyst import TechnicalAnalyst
+# from active_trader_llm.analysts.technical_analyst import TechnicalAnalyst  # Removed - no LLM interpretation
 # from active_trader_llm.analysts.sentiment_analyst import SentimentAnalyst  # Removed - not implemented
-from active_trader_llm.analysts.macro_analyst import MacroAnalyst
-from active_trader_llm.researchers.bull_bear import ResearcherDebate
+# from active_trader_llm.analysts.macro_analyst import MacroAnalyst  # Removed - using raw macro data
+# from active_trader_llm.researchers.bull_bear import ResearcherDebate  # Removed - trader decides from raw data
 from active_trader_llm.trader.trader_agent import TraderAgent
 from active_trader_llm.risk.risk_manager import RiskManager, PortfolioState
 from active_trader_llm.memory.memory_manager import MemoryManager, TradeMemory
@@ -87,12 +87,11 @@ class ActiveTraderLLM:
         api_key = self.config.llm.api_key
         model = self.config.llm.model
 
-        self.technical_analyst = TechnicalAnalyst(api_key=api_key, model=model)
+        # technical_analyst removed - validation done directly, no LLM interpretation needed
         self.sentiment_analyst = None  # Sentiment analyst not implemented
-        self.macro_analyst = MacroAnalyst(api_key=api_key, model=model) if self.config.enable_macro else None
+        # macro_analyst removed - using raw macro data instead of LLM interpretation
 
-        # Initialize researchers
-        self.researcher_debate = ResearcherDebate(api_key=api_key, model=model)
+        # researcher_debate removed - trader_agent makes decisions from raw data only
 
         # Initialize trader with validation
         from active_trader_llm.trader.trade_plan_validator import ValidationConfig
@@ -404,19 +403,17 @@ class ActiveTraderLLM:
             analyst_outputs = {}
 
             for symbol, features in features_dict.items():
-                logger.info(f"\nAnalyzing {symbol}...")
+                logger.info(f"\nPreparing data for {symbol}...")
 
-                # Technical analyst
-                tech_signal = self.technical_analyst.analyze(
-                    symbol,
-                    features.model_dump(),
-                    market_snapshot.model_dump(),
-                    memory_context=self.memory.get_context_summary(symbol)
-                )
+                # Validate critical data (price, ATR) - NO LLM call needed
+                price = features.close
+                atr = features.daily_indicators.get('ATR_14_daily')
 
-                # Skip symbol if technical analysis failed (missing price/ATR)
-                if tech_signal is None:
-                    logger.warning(f"{symbol}: Technical analysis returned None - skipping symbol")
+                if price is None or price == 0.0:
+                    logger.warning(f"{symbol}: Price data missing or zero - skipping symbol")
+                    continue
+                if atr is None:
+                    logger.warning(f"{symbol}: ATR data missing - skipping symbol")
                     continue
 
                 # Extract price series from price_df for trader_agent (last 20 bars)
@@ -424,9 +421,9 @@ class ActiveTraderLLM:
                 price_series = symbol_prices['close'].tolist() if not symbol_prices.empty else [features.close]
 
                 analyst_outputs[symbol] = {
-                    'technical': tech_signal.model_dump(),
-                    'features': features.model_dump(),  # Include raw features for trader_agent
-                    'price_series': price_series  # Include historical prices for LLM
+                    'features': features.model_dump(),  # Raw features for trader_agent
+                    'price_series': price_series,  # Historical prices for LLM
+                    'breadth': market_snapshot.model_dump()  # Add breadth to each symbol's context
                 }
 
                 # Add optional analysts
@@ -438,49 +435,25 @@ class ActiveTraderLLM:
                         logger.warning(f"{symbol}: Sentiment analysis returned None (stub mode)")
                         # Don't add sentiment to analyst_outputs - trading will proceed without it
 
-            # Macro analyst (if enabled)
-            macro_signal = None
-            if self.macro_analyst and self.macro_ingestor:
+            # Macro data (if enabled) - RAW DATA ONLY, no LLM interpretation
+            if self.macro_ingestor:
                 logger.info("Fetching macro-economic data...")
                 macro_snapshot = self.macro_ingestor.fetch_all()
-                macro_signal = self.macro_analyst.analyze(macro_snapshot)
 
-                if macro_signal:
-                    logger.info(f"Macro environment: {macro_signal.market_environment} (confidence: {macro_signal.confidence:.2f})")
+                if macro_snapshot:
+                    # Log key macro metrics
+                    vix_str = f"VIX: {macro_snapshot.vix:.1f}" if macro_snapshot.vix else "VIX: N/A"
+                    yield_10y_str = f"10Y: {macro_snapshot.treasury_10y:.2f}%" if macro_snapshot.treasury_10y else "10Y: N/A"
+                    logger.info(f"Macro data: {vix_str}, {yield_10y_str}")
 
-                    # Add macro context to ALL symbols
+                    # Add raw macro context to ALL symbols (no LLM interpretation)
                     for symbol in analyst_outputs.keys():
-                        analyst_outputs[symbol]['macro'] = macro_signal.model_dump()
+                        analyst_outputs[symbol]['macro'] = macro_snapshot.model_dump()
                 else:
-                    logger.warning("Macro analysis returned None - trading will proceed without macro context")
+                    logger.warning("Macro data fetch failed - trading will proceed without macro context")
 
-            # Step 4: Researcher debate
-            logger.info("Step 4: Running researcher debate...")
-            debates = {}
-
-            for symbol in analyst_outputs.keys():
-                debate_result = self.researcher_debate.debate(
-                    symbol,
-                    analyst_outputs[symbol],
-                    market_snapshot.model_dump()
-                )
-
-                # Skip symbol if debate failed
-                if debate_result is None:
-                    logger.warning(f"{symbol}: Researcher debate returned None - skipping symbol")
-                    continue
-
-                bull, bear = debate_result
-
-                debates[symbol] = {
-                    'bull': bull.model_dump(),
-                    'bear': bear.model_dump()
-                }
-
-                logger.info(f"{symbol} debate: Bull {bull.confidence:.2f} vs Bear {bear.confidence:.2f}")
-
-            # Step 5: Generate trade plans (Fully Autonomous LLM Decision)
-            logger.info("Step 5: Generating trade plans...")
+            # Step 4: Generate trade plans (Fully Autonomous LLM Decision from Raw Data)
+            logger.info("Step 4: Generating trade plans...")
             trade_plans = []
 
             # Build account state for LLM context
@@ -493,12 +466,7 @@ class ActiveTraderLLM:
                 'exposure_pct': portfolio_dict['total_exposure_pct']
             }
 
-            for symbol in debates.keys():
-                bull, bear = debates[symbol]['bull'], debates[symbol]['bear']
-
-                from active_trader_llm.researchers.bull_bear import BullThesis, BearThesis
-                bull_thesis = BullThesis(**bull)
-                bear_thesis = BearThesis(**bear)
+            for symbol in analyst_outputs.keys():
 
                 # Check if we already have a position in this symbol
                 existing_position = None
@@ -508,11 +476,11 @@ class ActiveTraderLLM:
                     if open_positions:
                         existing_position = open_positions[0]
 
-                # Call trader agent with full context (nof1.ai style)
+                # Call trader agent with full context (nof1.ai style - raw data only)
                 plan = self.trader_agent.decide(
                     symbol,
                     analyst_outputs[symbol],
-                    (bull_thesis, bear_thesis),
+                    (None, None),  # researcher_outputs removed - not used in prompt
                     self.config.risk_parameters.model_dump(),
                     memory_context=None,  # TODO: Add recent performance context
                     existing_position=existing_position,
@@ -571,7 +539,7 @@ class ActiveTraderLLM:
                     timestamp=datetime.now().isoformat(),
                     symbol=plan.symbol,
                     analyst_outputs=analyst_outputs[plan.symbol],
-                    researcher_outputs=debates[plan.symbol],
+                    researcher_outputs=None,  # Removed - trader decides from raw data only
                     trade_plan=plan.model_dump(),
                     risk_decision=decision.model_dump()
                 )
