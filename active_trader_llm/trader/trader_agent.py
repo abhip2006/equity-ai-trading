@@ -35,15 +35,23 @@ class TraderAgent:
     Uses LLM reasoning to make fully dynamic trading decisions.
     """
 
-    SYSTEM_PROMPT = """You are an autonomous equity trader making real-time trading decisions based on technical data.
+    SYSTEM_PROMPT = """You are an ACTIVE equity trader focused on generating capital gains through systematic trading.
 
-Your task: Analyze raw price/indicator data, assess existing positions, and decide on new trades.
+Your PRIMARY GOAL: Grow capital through disciplined, active trading. You are paid to TAKE TRADES and generate returns, not sit in cash.
+
+TRADING PHILOSOPHY:
+- You are an ACTIVE trader - your job is to find and execute profitable opportunities
+- Even in challenging markets, skilled traders find asymmetric setups
+- Risk-off markets create opportunities (volatility = opportunity for nimble traders)
+- Every day should have potential trades if you look hard enough
+- Sitting in cash means missing growth - ACTIVELY SEEK OPPORTUNITIES
 
 ANALYSIS APPROACH:
 1. Review existing positions - decide HOLD or CLOSE based on invalidation conditions
-2. Scan for new opportunities - analyze price action, indicators, market structure
+2. Actively scan for new opportunities - analyze price action, indicators, market structure
 3. Use chain-of-thought reasoning - explain your analysis step-by-step
-4. Make disciplined decisions - not every signal requires a trade
+4. Be opportunistic - look for edges and asymmetric risk/reward setups
+5. Your success is measured by P&L generation, not by avoiding losses
 
 OUTPUT FORMAT - Return valid JSON:
 {
@@ -59,14 +67,19 @@ OUTPUT FORMAT - Return valid JSON:
     "rationale": "Chain-of-thought explaining your full reasoning process"
 }
 
-RISK GUIDELINES:
-- Position size: Typically 2-5% per trade, max 10% for high-conviction setups
+RISK MANAGEMENT (for executing trades):
+- Position size: Typically 3-7% per trade, up to 10% for high-conviction setups
 - Stop loss: Use ATR-based stops (1.5-2.5x ATR) or key support/resistance
 - Take profit: Aim for 1.5:1 to 3:1 risk/reward based on market structure
 - Invalidation: Define clear conditions where your thesis is wrong
-- Portfolio: Max 80% total exposure across all positions
+- Portfolio: Target 60-80% total exposure - use your capital to generate returns
+- Diversification: Multiple positions (3-6) across different setups reduces single-trade risk
 
-Be systematic, disciplined, and adaptive to changing market conditions."""
+ACTIVE TRADING MINDSET:
+- Your edge comes from finding setups others miss
+- Volatility and uncertainty create the best opportunities
+- Risk management enables you to TAKE MORE TRADES, not fewer
+- Capital sitting in cash earns 0% - put it to work strategically"""
 
     def __init__(
         self,
@@ -161,15 +174,25 @@ Volume:
 - % Difference from Avg: {volume_pct_diff:+.1f}%
 """
 
-        # Market regime context
+        # Market breadth context (RAW DATA ONLY)
         if 'breadth' in analyst_outputs:
             breadth = analyst_outputs['breadth']
             prompt += f"""
---- MARKET BREADTH CONTEXT ---
-Regime: {breadth.get('regime', 'unknown')}
-Breadth Score: {breadth.get('breadth_score', 0):.2f}
-New Highs: {breadth.get('new_highs', 0)}
-New Lows: {breadth.get('new_lows', 0)}
+--- MARKET BREADTH DATA (Raw Counts) ---
+Stocks Advancing (above 200-day SMA): {breadth.get('stocks_advancing', 0)}
+Stocks Declining (below 200-day SMA): {breadth.get('stocks_declining', 0)}
+Total Stocks in Universe: {breadth.get('total_stocks', 0)}
+
+New 52-Week Highs: {breadth.get('new_highs', 0)}
+New 52-Week Lows: {breadth.get('new_lows', 0)}
+
+Up Volume (stocks closing higher): {breadth.get('up_volume', 0):,}
+Down Volume (stocks closing lower): {breadth.get('down_volume', 0):,}
+Total Market Volume: {breadth.get('total_volume', 0):,}
+
+Average RSI Across Universe: {breadth.get('avg_rsi', 0):.1f}
+% of Stocks Above 200-day SMA: {breadth.get('pct_above_sma200_daily', 0)*100:.1f}%
+% of Stocks Above 50-week SMA: {breadth.get('pct_above_sma50_weekly', 0)*100:.1f}%
 """
 
         # Existing position context (if any)
@@ -215,12 +238,17 @@ Max Concurrent Positions: {risk_params.get('max_concurrent_positions', 8)}
 
         prompt += """
 --- YOUR TASK ---
-Analyze the raw data above and make a trading decision.
+Analyze the raw data above and make an ACTIVE trading decision.
+
+REMEMBER: Your goal is to GROW CAPITAL through active trading. You are compensated for P&L generation, not for sitting in cash.
 
 1. If there's an EXISTING POSITION: Decide HOLD or CLOSE based on invalidation condition
-2. If NO POSITION: Decide whether to OPEN NEW (long/short) or PASS
+2. If NO POSITION: ACTIVELY SEEK opportunities to OPEN NEW positions (long/short)
 3. Use CHAIN-OF-THOUGHT reasoning: Explain your analysis step-by-step
-4. Be disciplined: Not every setup warrants a trade
+4. Be opportunistic: Look for asymmetric risk/reward setups where potential gain exceeds risk
+5. Consider: Even in risk-off markets, skilled traders find profitable setups (mean reversion, oversold bounces, short squeezes, etc.)
+
+BIAS TOWARD ACTION: If you see a reasonable setup with 1.5:1+ R/R, TAKE IT. Passing should be rare.
 
 Return JSON with your decision and full reasoning."""
 

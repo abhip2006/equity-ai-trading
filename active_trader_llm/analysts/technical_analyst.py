@@ -131,10 +131,12 @@ TECHNICAL INDICATORS (Daily):
 
         prompt += f"""
 
-MARKET CONTEXT:
-- Regime: {market_snapshot.get('regime_hint', 'unknown')}
-- Breadth Score: {market_snapshot.get('breadth_score', 0.0):.2f}
-- A/D Ratio: {market_snapshot.get('advance_decline_ratio', 1.0):.2f}
+MARKET CONTEXT (Raw Data):
+- Advancing Stocks: {market_snapshot.get('stocks_advancing', 0)} / {market_snapshot.get('total_stocks', 0)}
+- Declining Stocks: {market_snapshot.get('stocks_declining', 0)} / {market_snapshot.get('total_stocks', 0)}
+- New Highs: {market_snapshot.get('new_highs', 0)}
+- New Lows: {market_snapshot.get('new_lows', 0)}
+- Average RSI: {market_snapshot.get('avg_rsi', 50):.1f}
 """
 
         if memory_context:

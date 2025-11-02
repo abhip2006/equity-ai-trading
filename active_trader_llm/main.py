@@ -344,7 +344,12 @@ class ActiveTraderLLM:
                 return
 
             market_snapshot = self.feature_builder.build_market_snapshot(price_df, features_dict)
-            logger.info(f"Market regime: {market_snapshot.regime_hint} (breadth: {market_snapshot.breadth_score:.2f})")
+            logger.info(
+                f"Market breadth: {market_snapshot.stocks_advancing} advancing / "
+                f"{market_snapshot.stocks_declining} declining "
+                f"(total: {market_snapshot.total_stocks}) | "
+                f"New highs: {market_snapshot.new_highs}, lows: {market_snapshot.new_lows}"
+            )
 
             # Step 0b: Load positions and check exits (after we have current prices)
             logger.info("\nStep 0b: Checking existing positions...")

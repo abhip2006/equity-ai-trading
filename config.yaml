@@ -65,6 +65,8 @@ technical_indicators:
       conversion: 250         # 50 weeks * 5 trading days
 
 # Market Breadth Configuration
+# Returns RAW market data only (no regime classification)
+# LLM interprets the raw breadth counts to determine market environment
 market_breadth:
   enabled: true
 
@@ -74,12 +76,7 @@ market_breadth:
     high_threshold_pct: 0.98      # Within 2% of high
     low_threshold_pct: 1.02       # Within 2% of low
 
-  regime_thresholds:
-    risk_off_breadth: -0.5
-    risk_off_rsi: 35
-    trending_bull_breadth: 0.5
-    trending_bull_pct_above_ema200: 0.6  # Daily SMA 200
-    trending_bear_breadth: -0.3
+  # regime_thresholds removed - LLM decides market regime from raw data
 
 # Two-stage market scanner
 scanner:

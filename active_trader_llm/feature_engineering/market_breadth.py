@@ -18,10 +18,14 @@ class MarketBreadthAnalyzer:
     def __init__(self, config: Dict):
         self.config = config
         self.hl_config = config['new_highs_lows']
-        self.regime_config = config['regime_thresholds']
+        # regime_config no longer needed - LLM interprets raw data
 
     def analyze(self, price_df: pd.DataFrame, features: Dict[str, FeatureSet]) -> MarketSnapshot:
-        """Calculate market breadth features"""
+        """
+        Calculate RAW market breadth data (no interpretations or scores).
+
+        LLM receives raw counts and determines market environment itself.
+        """
         if not features:
             logger.error("Cannot calculate market breadth: No features provided")
             logger.error("Market breadth requires real feature data for all symbols")
@@ -29,36 +33,31 @@ class MarketBreadthAnalyzer:
 
         timestamp = list(features.values())[0].timestamp
 
-        # Calculate advance/decline (using daily SMA 200)
+        # Calculate raw advance/decline counts (using daily SMA 200)
         advances, declines = self._calculate_advance_decline(features)
-        ad_ratio = self._safe_ratio(advances, declines)
-
-        # Breadth score
         total = len(features)
-        breadth_score = (advances - declines) / total if total > 0 else 0.0
 
-        # New highs/lows
+        # Calculate raw new highs/lows counts
         new_highs, new_lows = self._calculate_new_highs_lows(price_df, features)
 
-        # Volume metrics
-        up_volume_ratio = self._calculate_volume_ratio(features)
+        # Calculate raw volume data
+        up_volume, down_volume, total_volume = self._calculate_volume_data(features)
 
-        # Aggregated stats
+        # Aggregated stats (raw averages, no thresholds)
         avg_rsi = self._avg_indicator(features, 'RSI_14_daily')
         pct_above_sma200 = self._pct_above_ma(features, 'SMA_200_daily')
         pct_above_sma50_weekly = self._pct_above_ma(features, 'SMA_50week')
 
-        # Determine regime
-        regime = self._determine_regime(breadth_score, avg_rsi, pct_above_sma200)
-
         return MarketSnapshot(
             timestamp=timestamp,
-            regime_hint=regime,
-            breadth_score=breadth_score,
-            advance_decline_ratio=ad_ratio,
+            stocks_advancing=advances,
+            stocks_declining=declines,
+            total_stocks=total,
             new_highs=new_highs,
             new_lows=new_lows,
-            up_volume_ratio=up_volume_ratio,
+            up_volume=up_volume,
+            down_volume=down_volume,
+            total_volume=total_volume,
             avg_rsi=avg_rsi,
             pct_above_sma200_daily=pct_above_sma200,
             pct_above_sma50_weekly=pct_above_sma50_weekly
@@ -71,14 +70,6 @@ class MarketBreadthAnalyzer:
         declines = len(features) - advances
         return advances, declines
 
-    def _safe_ratio(self, numerator: float, denominator: float) -> float:
-        """Division by zero protection"""
-        if denominator > 0:
-            return numerator / denominator
-        elif numerator > 0:
-            return float('inf')
-        else:
-            return 1.0
 
     def _calculate_new_highs_lows(self, price_df: pd.DataFrame,
                                    features: Dict[str, FeatureSet]) -> tuple:
@@ -108,15 +99,18 @@ class MarketBreadthAnalyzer:
 
         return new_highs, new_lows
 
-    def _calculate_volume_ratio(self, features: Dict[str, FeatureSet]) -> float:
-        """Calculate up volume ratio"""
+    def _calculate_volume_data(self, features: Dict[str, FeatureSet]) -> tuple:
+        """
+        Calculate raw volume data (no ratios).
+
+        Returns:
+            (up_volume, down_volume, total_volume) tuple of integers
+        """
         up_volume = sum(f.volume for f in features.values() if f.close > f.ohlcv['open'])
+        down_volume = sum(f.volume for f in features.values() if f.close <= f.ohlcv['open'])
         total_volume = sum(f.volume for f in features.values())
 
-        if total_volume > 0:
-            return up_volume / total_volume
-        else:
-            return 0.5
+        return int(up_volume), int(down_volume), int(total_volume)
 
     def _avg_indicator(self, features: Dict[str, FeatureSet],
                       indicator_name: str) -> Optional[float]:
@@ -139,45 +133,3 @@ class MarketBreadthAnalyzer:
 
         return count / len(features) if features else None
 
-    def _determine_regime(self, breadth: float, rsi: Optional[float],
-                         pct_sma200: Optional[float]) -> str:
-        """
-        Determine market regime based on available indicators.
-
-        Breadth is the PRIMARY signal. RSI and pct_sma200 are confirmatory.
-        If confirmatory indicators are missing, regime is determined from breadth alone.
-        """
-        t = self.regime_config
-
-        # Warn if key indicators are missing - regime will be breadth-only
-        if rsi is None:
-            logger.warning("Average RSI unavailable - regime determined from breadth only")
-        if pct_sma200 is None:
-            logger.warning("Pct above SMA200 unavailable - regime determined from breadth only")
-
-        # Determine regime using available indicators (NO fabricated values)
-
-        # Risk-off check: breadth OR rsi (if available)
-        risk_off_breadth = breadth < t['risk_off_breadth']
-        risk_off_rsi = (rsi is not None and rsi < t['risk_off_rsi'])
-        if risk_off_breadth or risk_off_rsi:
-            return "risk_off"
-
-        # Trending bull check: breadth AND pct_sma200 (if available)
-        bull_breadth = breadth > t['trending_bull_breadth']
-        bull_sma200 = (pct_sma200 is not None and pct_sma200 > t['trending_bull_pct_above_ema200'])
-        # Only confirm trending_bull if we have pct_sma200 data OR breadth is very strong
-        if bull_breadth:
-            if pct_sma200 is None:
-                # Require stronger breadth confirmation without pct_sma200
-                if breadth > t['trending_bull_breadth'] * 1.2:
-                    return "trending_bull"
-            elif bull_sma200:
-                return "trending_bull"
-
-        # Trending bear check: breadth only (no confirmatory needed)
-        if breadth < t['trending_bear_breadth']:
-            return "trending_bear"
-
-        # Default: range
-        return "range"

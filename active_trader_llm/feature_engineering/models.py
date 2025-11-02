@@ -66,19 +66,31 @@ class FeatureSet(BaseModel):
 
 
 class MarketSnapshot(BaseModel):
-    """Market-level breadth and regime information"""
-    timestamp: str
-    regime_hint: Literal["risk_off", "range", "trending_bull", "trending_bear"]
-    breadth_score: float = Field(..., ge=-1.0, le=1.0)
-    advance_decline_ratio: float
-    new_highs: int
-    new_lows: int
-    up_volume_ratio: float
+    """
+    Market-level breadth - RAW DATA ONLY (no calculations or interpretations).
 
-    # Aggregated indicator stats
-    avg_rsi: Optional[float] = None
-    pct_above_sma200_daily: Optional[float] = None
-    pct_above_sma50_weekly: Optional[float] = None
+    LLM interprets these raw values to determine market environment.
+    """
+    timestamp: str
+
+    # Raw advance/decline counts
+    stocks_advancing: int = Field(description="Count of stocks above 200-day SMA")
+    stocks_declining: int = Field(description="Count of stocks below 200-day SMA")
+    total_stocks: int = Field(description="Total stocks in universe")
+
+    # Raw new highs/lows counts
+    new_highs: int = Field(description="Stocks at/near 52-week highs")
+    new_lows: int = Field(description="Stocks at/near 52-week lows")
+
+    # Raw volume data
+    up_volume: int = Field(description="Total volume in advancing stocks")
+    down_volume: int = Field(description="Total volume in declining stocks")
+    total_volume: int = Field(description="Total market volume")
+
+    # Aggregated indicator stats (raw averages)
+    avg_rsi: Optional[float] = Field(None, description="Average RSI across universe")
+    pct_above_sma200_daily: Optional[float] = Field(None, description="% of stocks above 200-day SMA")
+    pct_above_sma50_weekly: Optional[float] = Field(None, description="% of stocks above 50-week SMA")
 
 
 class MacroSnapshot(BaseModel):
