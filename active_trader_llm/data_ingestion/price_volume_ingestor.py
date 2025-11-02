@@ -130,7 +130,8 @@ class PriceVolumeIngestor:
         # Convert timestamp to string for storage
         df_cache['timestamp'] = df_cache['timestamp'].astype(str)
 
-        df_cache.to_sql('price_data', conn, if_exists='append', index=False, method='replace')
+        # Use INSERT OR REPLACE to handle conflicts with existing cached data
+        df_cache.to_sql('price_data', conn, if_exists='append', index=False)
         conn.close()
 
     def _get_cached_data(

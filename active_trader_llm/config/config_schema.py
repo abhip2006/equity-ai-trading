@@ -132,6 +132,16 @@ class ScannerConfig(BaseModel):
     stage2: Stage2Config = Field(default_factory=Stage2Config)
 
 
+class MacroConfig(BaseModel):
+    """
+    Macro analysis configuration.
+
+    Controls macro data fetching and caching settings.
+    """
+    cache_duration_seconds: int = Field(default=300, gt=0, description="Cache duration for macro data (default 5 minutes)")
+    use_yfinance: bool = Field(default=True, description="Use yfinance for macro data fetching")
+
+
 class ExecutionConfig(BaseModel):
     """
     Execution configuration for live trading.
@@ -142,6 +152,10 @@ class ExecutionConfig(BaseModel):
     paper_trading: bool = True
     order_type: Literal["market", "limit"] = "market"
     time_in_force: Literal["day", "gtc", "ioc", "fok"] = "day"
+
+    # Simulation costs
+    commission_per_trade: float = 1.0  # Fixed commission per trade (USD)
+    slippage_bps: float = 5.0  # Slippage in basis points (5 bps = 0.05%)
 
     # Alpaca-specific settings (credentials from environment variables)
     alpaca_api_key_env: str = "ALPACA_API_KEY"
@@ -165,6 +179,7 @@ class Config(BaseModel):
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     cost_control: CostControlConfig = Field(default_factory=CostControlConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    macro_data: MacroConfig = Field(default_factory=MacroConfig)
 
     # Technical indicators and market breadth (raw dict for flexibility)
     technical_indicators: Dict[str, Any] = Field(default_factory=dict)
@@ -178,13 +193,14 @@ class Config(BaseModel):
     enable_sentiment: bool = False
     enable_macro: bool = False
 
-    @validator('strategies', pre=True, always=True)
-    def set_default_strategies(cls, v):
-        if not v:
-            return [
-                StrategyConfig(name="momentum_breakout", regime="trending_bull"),
-                StrategyConfig(name="mean_reversion", regime="range"),
-                StrategyConfig(name="pullback", regime="mild_trend"),
-                StrategyConfig(name="sector_rotation", regime="mixed"),
-            ]
-        return v
+    # REMOVED: Default strategy creation - LLM decides dynamically
+    # @validator('strategies', pre=True, always=True)
+    # def set_default_strategies(cls, v):
+    #     if not v:
+    #         return [
+    #             StrategyConfig(name="momentum_breakout", regime="trending_bull"),
+    #             StrategyConfig(name="mean_reversion", regime="range"),
+    #             StrategyConfig(name="pullback", regime="mild_trend"),
+    #             StrategyConfig(name="sector_rotation", regime="mixed"),
+    #         ]
+    #     return v

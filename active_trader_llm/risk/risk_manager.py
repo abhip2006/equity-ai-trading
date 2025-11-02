@@ -77,15 +77,17 @@ class RiskManager:
         self,
         new_position_pct: float,
         current_prices: Dict[str, float],
+        portfolio_equity: float,
         max_total_exposure: float = 0.80
     ) -> Tuple[bool, Optional[str]]:
         """
         Check if adding this position would exceed portfolio concentration limits
 
         Args:
-            new_position_pct: Size of new position as % of capital
+            new_position_pct: Size of new position as % of capital (decimal, e.g. 0.05 = 5%)
             current_prices: Current prices for calculating exposure
-            max_total_exposure: Maximum total exposure (default 80%)
+            portfolio_equity: Total portfolio equity value
+            max_total_exposure: Maximum total exposure (decimal, default 0.80 = 80%)
 
         Returns:
             (is_valid, error_message)
@@ -93,14 +95,14 @@ class RiskManager:
         if not self.position_manager:
             return True, None
 
-        portfolio_state = self.position_manager.get_portfolio_state(current_prices)
+        portfolio_state = self.position_manager.get_portfolio_state(current_prices, portfolio_equity)
         current_exposure = portfolio_state.get('total_exposure_pct', 0.0)
 
         new_total_exposure = current_exposure + new_position_pct
 
         if new_total_exposure > max_total_exposure:
             return False, (
-                f"Portfolio concentration {new_total_exposure:.1f}% would exceed "
+                f"Portfolio concentration {new_total_exposure*100:.1f}% would exceed "
                 f"maximum {max_total_exposure*100:.0f}%"
             )
 
@@ -156,8 +158,9 @@ class RiskManager:
         # NEW: Check portfolio concentration (if current_prices provided)
         if current_prices:
             is_valid, error = self.check_portfolio_concentration(
-                trade_plan.position_size_pct * 100,  # Convert to percentage
+                trade_plan.position_size_pct,  # Already in decimal format (0.05 = 5%)
                 current_prices,
+                portfolio_state.equity,
                 max_total_exposure=0.80
             )
             if not is_valid:

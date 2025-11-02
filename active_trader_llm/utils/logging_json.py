@@ -84,7 +84,9 @@ class JSONLogger:
         filled_price: float,
         filled_qty: float,
         slippage: float,
-        execution_method: str = "paper"
+        execution_method: str = "paper",
+        broker_order_id: str = None,
+        order_status: str = None
     ):
         """
         Log trade execution details.
@@ -97,7 +99,9 @@ class JSONLogger:
             filled_price: Actual fill price
             filled_qty: Filled quantity
             slippage: Price slippage from expected entry
-            execution_method: paper/live
+            execution_method: paper/live/alpaca_paper/alpaca_live
+            broker_order_id: Broker's order ID (for live trading)
+            order_status: Order status from broker (filled/partial/pending)
         """
         entry = {
             'type': 'execution',
@@ -110,6 +114,12 @@ class JSONLogger:
             'slippage': slippage,
             'execution_method': execution_method
         }
+
+        # Add broker-specific fields if provided
+        if broker_order_id:
+            entry['broker_order_id'] = broker_order_id
+        if order_status:
+            entry['order_status'] = order_status
 
         self._write_entry(entry)
         logger.info(f"Logged execution for {trade_id}: {direction} {symbol} @ {filled_price}")

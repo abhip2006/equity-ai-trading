@@ -1,25 +1,41 @@
-# ActiveTrader-LLM Configuration
-# Cost-efficient, reasoning-based LLM agent for active stock trading
+# ActiveTrader-LLM Configuration - Alpaca Paper Trading
+# Example configuration for live trading with Alpaca (paper trading mode)
 
-mode: paper-live  # backtest | paper-live
+mode: paper-live  # backtest | paper-live | live
 
 # Data sources
 data_sources:
   prices: yfinance
-  interval: 1d  # 1h, 1d, 5m, 15m (using 1d for backtest compatibility)
-  universe:  # Fallback universe if scanner fails
+  interval: 1h  # 1h, 1d, 5m, 15m
+  universe:
     - AAPL
     - MSFT
-    - SPY
-    - QQQ
+    - GOOGL
+    - AMZN
+    - NVDA
   lookback_days: 90
+
+# Execution Configuration
+# Controls how orders are submitted to the broker
+execution:
+  broker: alpaca              # alpaca | simulated
+  paper_trading: true         # Use paper trading (RECOMMENDED for testing)
+  order_type: market          # market | limit
+  time_in_force: day          # day | gtc | ioc | fok
+
+  # Alpaca API credentials (set via environment variables)
+  alpaca_api_key_env: ALPACA_API_KEY
+  alpaca_secret_key_env: ALPACA_SECRET_KEY
+  alpaca_base_url: null       # null = auto-select based on paper_trading
+                              # Paper: https://paper-api.alpaca.markets
+                              # Live: https://api.alpaca.markets
 
 # Technical Indicators Configuration
 technical_indicators:
   # Data quality requirements
   quality:
-    min_bars_required: 20         # Reduced for backtest compatibility (was 250)
-    reject_incomplete: false       # Allow symbols with some missing indicators for backtest
+    min_bars_required: 250        # Need 50 weeks minimum (50w * 5d = 250d)
+    reject_incomplete: true        # Exclude symbols with any NaN
 
   # Daily timeframe indicators
   daily:
@@ -33,10 +49,10 @@ technical_indicators:
       enabled: true
       period: 20
     sma_50:
-      enabled: false      # Disabled for backtest - requires too much data
+      enabled: true
       period: 50
     sma_200:
-      enabled: false      # Disabled for backtest - requires too much data
+      enabled: true
       period: 200
     rsi:
       enabled: true
@@ -48,19 +64,19 @@ technical_indicators:
   # Weekly timeframe indicators (converted from daily data)
   weekly:
     ema_10:
-      enabled: false          # Disabled for backtest - requires 50 days
+      enabled: true
       period: 10              # 10 weeks
       conversion: 50          # 10 weeks * 5 trading days
     sma_21:
-      enabled: false          # Disabled for backtest - requires 105 days
+      enabled: true
       period: 21              # 21 weeks
       conversion: 105         # 21 weeks * 5 trading days
     sma_30:
-      enabled: false          # Disabled for backtest - requires 150 days
+      enabled: true
       period: 30              # 30 weeks
       conversion: 150         # 30 weeks * 5 trading days
     sma_50:
-      enabled: false          # Disabled for backtest - requires 250 days
+      enabled: true
       period: 50              # 50 weeks
       conversion: 250         # 50 weeks * 5 trading days
 
@@ -89,12 +105,12 @@ scanner:
   refresh_universe_hours: 24  # How often to refresh universe cache
   stage1:
     enabled: true
-    target_candidate_count: 50  # Target number of candidates for Stage 2 (reduced for live trading)
+    target_candidate_count: 100  # Target number of candidates for Stage 2
     market_summary_sectors: 11  # Number of sectors to include in market summary
   stage2:
     batch_size: 15  # Stocks per LLM call in deep analysis
-    max_batches: 3  # Max batches to process (reduced for live trading cost control)
-    max_candidates: 50  # Max candidates to analyze in Stage 2 (reduced for live trading)
+    max_batches: 10  # Max batches to process (prevents runaway costs)
+    max_candidates: 150  # Max candidates to analyze in Stage 2
 
 # Risk parameters
 # IMPORTANT: Position sizing limits removed - agent decides based on performance
@@ -136,27 +152,27 @@ execution_schedule:
   timezone: "America/New_York"
   monitor_exits_interval_seconds: 60  # How often to check exits between cycles
 
-# Trading strategies - REMOVED: LLM decides dynamically
-# strategies:
-#   - name: momentum_breakout
-#     regime: trending_bull
-#     enabled: true
-#   - name: mean_reversion
-#     regime: range
-#     enabled: true
-#   - name: pullback
-#     regime: mild_trend
-#     enabled: true
-#   - name: sector_rotation
-#     regime: mixed
-#     enabled: true
+# Trading strategies
+strategies:
+  - name: momentum_breakout
+    regime: trending_bull
+    enabled: true
+  - name: mean_reversion
+    regime: range
+    enabled: true
+  - name: pullback
+    regime: mild_trend
+    enabled: true
+  - name: sector_rotation
+    regime: mixed
+    enabled: true
 
-# Strategy switching - REMOVED: No predefined strategies
-# strategy_switching:
-#   window_trades: 30  # Evaluate last 30 trades
-#   min_win_rate: 0.35
-#   min_net_pl: 0.0
-#   hysteresis_trades_before_switch: 10  # Cooldown period
+# Strategy switching
+strategy_switching:
+  window_trades: 30  # Evaluate last 30 trades
+  min_win_rate: 0.35
+  min_net_pl: 0.0
+  hysteresis_trades_before_switch: 10  # Cooldown period
 
 # Scheduling
 schedule:
@@ -172,40 +188,15 @@ cost_control:
 
 # LLM configuration
 llm:
-  provider: openai  # anthropic | openai | local
-  model: gpt-3.5-turbo  # gpt-4o, gpt-4-turbo, gpt-3.5-turbo
-  api_key: ${OPENAI_API_KEY}  # Use environment variable
+  provider: anthropic  # anthropic | openai | local
+  model: claude-3-5-sonnet-20241022
+  api_key: ${ANTHROPIC_API_KEY}  # Use environment variable
   temperature: 0.3
   max_tokens: 2000
 
 # Storage paths
 database_path: data/trading.db
 log_path: logs/trade_log.jsonl
-
-# Backtest-specific settings
-backtest:
-  # Execution cost modeling
-  execution_costs:
-    commission_per_share: 0.005        # Commission per share (e.g., $0.005)
-    min_commission: 1.0                # Minimum commission per trade
-    max_commission_pct: 0.5            # Max commission as % of trade value
-    base_slippage_bps: 2.0             # Base slippage in basis points
-    volume_impact_factor: 0.1          # Impact of trade size relative to volume
-    max_position_pct_of_adv: 5.0       # Max position as % of avg daily volume
-    allow_premarket: false             # Allow pre-market trading
-    allow_afterhours: false            # Allow after-hours trading
-
-# Execution configuration (for paper-live/live modes)
-execution:
-  broker: alpaca                       # alpaca | simulated
-  paper_trading: true                  # Use paper trading account
-  order_type: market                   # market | limit
-  time_in_force: day                   # day | gtc | ioc
-  commission_per_trade: 1.0            # Fixed commission per trade (USD)
-  slippage_bps: 5.0                    # Slippage in basis points (5 bps = 0.05%)
-  alpaca_api_key_env: ALPACA_API_KEY   # Environment variable for API key
-  alpaca_secret_key_env: ALPACA_SECRET_KEY  # Environment variable for secret key
-  alpaca_base_url: https://paper-api.alpaca.markets  # Alpaca API URL
 
 # Macro Analysis Settings
 macro_data:

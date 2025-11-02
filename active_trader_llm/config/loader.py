@@ -2,11 +2,25 @@
 Configuration loader for YAML/JSON files.
 """
 
+import os
 import yaml
 import json
 from pathlib import Path
 from typing import Union
 from .config_schema import Config
+
+
+def _expand_env_vars(config_dict: dict) -> dict:
+    """Recursively expand environment variables in config dictionary"""
+    if isinstance(config_dict, dict):
+        return {k: _expand_env_vars(v) for k, v in config_dict.items()}
+    elif isinstance(config_dict, list):
+        return [_expand_env_vars(item) for item in config_dict]
+    elif isinstance(config_dict, str):
+        # Expand environment variables like ${VAR_NAME}
+        return os.path.expandvars(config_dict)
+    else:
+        return config_dict
 
 
 def load_config(config_path: Union[str, Path]) -> Config:
@@ -23,6 +37,9 @@ def load_config(config_path: Union[str, Path]) -> Config:
             config_dict = json.load(f)
         else:
             raise ValueError(f"Unsupported config format: {config_path.suffix}")
+
+    # Expand environment variables
+    config_dict = _expand_env_vars(config_dict)
 
     return Config(**config_dict)
 

@@ -308,17 +308,19 @@ class PositionManager:
 
         return count > 0
 
-    def get_portfolio_state(self, current_prices: Dict[str, float]) -> Dict:
+    def get_portfolio_state(self, current_prices: Dict[str, float], total_portfolio_value: Optional[float] = None) -> Dict:
         """
         Calculate current portfolio state including unrealized P&L
 
         Args:
             current_prices: Dictionary mapping symbol -> current price
+            total_portfolio_value: Total portfolio equity for calculating exposure percentage (optional)
 
         Returns:
             Dictionary with portfolio metrics:
             - open_positions: List of positions with unrealized P&L
-            - total_exposure: Sum of position values
+            - total_exposure: Sum of position values (dollars)
+            - total_exposure_pct: Total exposure as percentage of portfolio (decimal, e.g. 0.05 = 5%)
             - total_unrealized_pnl: Sum of unrealized P&L
             - position_count: Number of open positions
         """
@@ -356,9 +358,15 @@ class PositionManager:
             total_exposure += position_value
             total_unrealized_pnl += unrealized_pnl
 
+        # Calculate exposure percentage if portfolio value provided
+        total_exposure_pct = 0.0
+        if total_portfolio_value and total_portfolio_value > 0:
+            total_exposure_pct = total_exposure / total_portfolio_value
+
         return {
             'open_positions': portfolio_positions,
             'total_exposure': total_exposure,
+            'total_exposure_pct': total_exposure_pct,
             'total_unrealized_pnl': total_unrealized_pnl,
             'position_count': len(portfolio_positions)
         }
@@ -437,6 +445,26 @@ class PositionManager:
             pnl = (position.entry_price - exit_price) * position.shares
 
         return pnl
+
+    def clear_all_positions(self):
+        """
+        Clear all positions from the database.
+        WARNING: This will permanently delete all position records!
+        Use only for backtesting or testing purposes.
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("DELETE FROM positions")
+            deleted_count = cursor.rowcount
+            conn.commit()
+            logger.info(f"Cleared {deleted_count} positions from database")
+        except Exception as e:
+            logger.error(f"Error clearing positions: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
 
     def _row_to_position(self, row: sqlite3.Row) -> Position:
         """Convert database row to Position object"""

@@ -18,24 +18,30 @@ import argparse
 from pathlib import Path
 from datetime import datetime, time
 import uuid
+from dotenv import load_dotenv
 
-from config.loader import load_config
-from data_ingestion.price_volume_ingestor import PriceVolumeIngestor
-from feature_engineering.feature_builder import FeatureBuilder
-from analysts.technical_analyst import TechnicalAnalyst
-from analysts.breadth_health_analyst import BreadthHealthAnalyst
-from analysts.sentiment_analyst import SentimentAnalyst
-from analysts.macro_analyst import MacroAnalyst
-from researchers.bull_bear import ResearcherDebate
-from trader.trader_agent import TraderAgent
-from risk.risk_manager import RiskManager, PortfolioState
-from memory.memory_manager import MemoryManager, TradeMemory
-from learning.strategy_monitor import StrategyMonitor
-from utils.logging_json import JSONLogger
-from scanners.scanner_orchestrator import ScannerOrchestrator
-from execution.position_manager import PositionManager
-from execution.exit_monitor import ExitMonitor
-from execution.alpaca_broker import AlpacaBrokerExecutor
+# Load environment variables from .env file
+load_dotenv()
+
+from active_trader_llm.config.loader import load_config
+from active_trader_llm.data_ingestion.price_volume_ingestor import PriceVolumeIngestor
+from active_trader_llm.data_ingestion.macro_data_ingestor import MacroDataIngestor
+from active_trader_llm.feature_engineering.feature_builder import FeatureBuilder
+from active_trader_llm.analysts.technical_analyst import TechnicalAnalyst
+# from active_trader_llm.analysts.sentiment_analyst import SentimentAnalyst  # Removed - not implemented
+from active_trader_llm.analysts.macro_analyst import MacroAnalyst
+from active_trader_llm.researchers.bull_bear import ResearcherDebate
+from active_trader_llm.trader.trader_agent import TraderAgent
+from active_trader_llm.risk.risk_manager import RiskManager, PortfolioState
+from active_trader_llm.memory.memory_manager import MemoryManager, TradeMemory
+# REMOVED: StrategyMonitor - LLM decides dynamically
+# from active_trader_llm.learning.strategy_monitor import StrategyMonitor
+from active_trader_llm.utils.logging_json import JSONLogger
+from active_trader_llm.scanners.scanner_orchestrator import ScannerOrchestrator
+from active_trader_llm.execution.position_manager import PositionManager
+from active_trader_llm.execution.exit_monitor import ExitMonitor
+from active_trader_llm.execution.alpaca_broker import AlpacaBrokerExecutor
+from active_trader_llm.execution.simulated_broker import SimulatedBroker
 import os
 
 logging.basicConfig(
@@ -50,21 +56,31 @@ class ActiveTraderLLM:
     Main orchestrator for the multi-agent trading system.
     """
 
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, mode_override: str = None):
         """
         Initialize the trading system.
 
         Args:
             config_path: Path to YAML configuration file
+            mode_override: Optional mode override (e.g., "backtest" for backtesting)
         """
         logger.info(f"Initializing ActiveTrader-LLM from {config_path}")
 
         # Load configuration
         self.config = load_config(config_path)
+
+        # Apply mode override if provided
+        if mode_override:
+            self.config.mode = mode_override
+            logger.info(f"Mode overridden to: {mode_override}")
+
         logger.info(f"Mode: {self.config.mode}")
 
         # Initialize components
         self.ingestor = PriceVolumeIngestor(cache_db_path="data/price_cache.db")
+        self.macro_ingestor = MacroDataIngestor(
+            cache_duration_seconds=self.config.macro_data.cache_duration_seconds
+        ) if self.config.enable_macro else None
         self.feature_builder = FeatureBuilder(self.config.model_dump())
 
         # Initialize analysts
@@ -72,9 +88,8 @@ class ActiveTraderLLM:
         model = self.config.llm.model
 
         self.technical_analyst = TechnicalAnalyst(api_key=api_key, model=model)
-        self.breadth_analyst = BreadthHealthAnalyst(api_key=api_key, model=model)
-        self.sentiment_analyst = SentimentAnalyst() if self.config.enable_sentiment else None
-        self.macro_analyst = MacroAnalyst() if self.config.enable_macro else None
+        self.sentiment_analyst = None  # Sentiment analyst not implemented
+        self.macro_analyst = MacroAnalyst(api_key=api_key, model=model) if self.config.enable_macro else None
 
         # Initialize researchers
         self.researcher_debate = ResearcherDebate(api_key=api_key, model=model)
@@ -100,10 +115,11 @@ class ActiveTraderLLM:
 
         # Initialize memory and learning
         self.memory = MemoryManager(self.config.database_path)
-        self.strategy_monitor = StrategyMonitor(
-            self.memory,
-            self.config.strategy_switching.model_dump()
-        )
+        # REMOVED: Strategy monitoring - LLM decides dynamically
+        # self.strategy_monitor = StrategyMonitor(
+        #     self.memory,
+        #     self.config.strategy_switching.model_dump()
+        # )
 
         # Initialize position management
         self.position_manager = PositionManager(self.config.database_path.replace('trading.db', 'positions.db'))
@@ -115,9 +131,19 @@ class ActiveTraderLLM:
         # Initialize logging
         self.json_logger = JSONLogger(self.config.log_path)
 
-        # Initialize broker executor (for paper-live and live modes)
+        # Initialize broker executor
         self.broker_executor = None
-        if self.config.mode in ["paper-live", "live"]:
+        self.simulated_broker = None
+
+        if self.config.mode == "backtest":
+            # Use SimulatedBroker for backtesting
+            self.simulated_broker = SimulatedBroker(
+                initial_cash=100000.0,  # Will be updated by BacktestEngine
+                commission_per_trade=self.config.execution.commission_per_trade,
+                slippage_bps=self.config.execution.slippage_bps
+            )
+            logger.info("SimulatedBroker initialized for backtest mode")
+        elif self.config.mode in ["paper-live", "live"]:
             if self.config.execution.broker == "alpaca":
                 try:
                     api_key = os.getenv(self.config.execution.alpaca_api_key_env)
@@ -146,28 +172,111 @@ class ActiveTraderLLM:
                     alpaca_api_key=os.getenv('ALPACA_API_KEY'),
                     alpaca_secret_key=os.getenv('ALPACA_SECRET_KEY'),
                     alpaca_base_url=os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets'),
+                    paper=self.config.execution.paper_trading,  # Thread execution mode
                     anthropic_api_key=api_key,
                     requests_per_minute=200  # Standard plan
                 )
-                logger.info("Market scanner initialized (two-stage mode enabled)")
+                mode = "PAPER" if self.config.execution.paper_trading else "LIVE"
+                logger.info(f"Market scanner initialized (two-stage mode enabled, {mode} mode)")
             except Exception as e:
                 logger.warning(f"Failed to initialize scanner: {e}")
                 logger.warning("Falling back to fixed universe mode")
                 self.config.scanner.enabled = False
 
-        # Current state
-        self.current_strategy = self.config.strategies[0].name
-        self.portfolio_state = PortfolioState(
-            cash=100000.0,  # Initial capital
-            equity=100000.0,
-            positions=[],
-            daily_pnl=0.0
-        )
+        # REMOVED: Current strategy tracking - LLM decides dynamically
+        # self.current_strategy = self.config.strategies[0].name
+
+        # Initialize portfolio state (mode-dependent)
+        if self.config.mode == "backtest":
+            # Backtest: use tracked state (updated by SimulatedBroker)
+            self.portfolio_state = PortfolioState(
+                cash=100000.0,  # TODO: Make configurable via config
+                equity=100000.0,
+                positions=[],
+                daily_pnl=0.0
+            )
+            logger.info(f"Portfolio initialized: Backtest mode with $100,000 initial capital")
+
+        elif self.config.mode in ["paper-live", "live"] and self.broker_executor:
+            # Paper-live/live: fetch from Alpaca immediately
+            try:
+                account_info = self.broker_executor.get_account_info()
+                self.portfolio_state = PortfolioState(
+                    cash=float(account_info['cash']),
+                    equity=float(account_info['equity']),
+                    positions=[],  # Will be populated from position_manager
+                    daily_pnl=0.0
+                )
+                logger.info(
+                    f"Portfolio initialized: Alpaca account with "
+                    f"${float(account_info['equity']):,.2f} equity, "
+                    f"${float(account_info['cash']):,.2f} cash"
+                )
+            except Exception as e:
+                logger.error(f"Failed to fetch Alpaca account info: {e}")
+                # Fallback to default
+                self.portfolio_state = PortfolioState(
+                    cash=0.0, equity=0.0, positions=[], daily_pnl=0.0
+                )
+        else:
+            # Fallback for other modes
+            self.portfolio_state = PortfolioState(
+                cash=100000.0, equity=100000.0, positions=[], daily_pnl=0.0
+            )
+            logger.info("Portfolio initialized with default $100,000")
 
         # Scanner state
         self.scanned_universe = None
 
         logger.info("ActiveTrader-LLM initialized successfully")
+
+    def get_current_portfolio_state(self) -> PortfolioState:
+        """
+        Get current portfolio state (mode-aware).
+
+        Returns:
+            PortfolioState with fresh values:
+            - Backtest: Returns internally tracked state
+            - Paper-live/live: Fetches fresh from Alpaca broker
+
+        This ensures position sizing and risk checks always use
+        accurate account balances in live trading.
+        """
+        if self.config.mode == "backtest":
+            # Use tracked state for backtest
+            logger.debug("Portfolio state source: Backtest tracking")
+            return self.portfolio_state
+
+        elif self.config.mode in ["paper-live", "live"] and self.broker_executor:
+            # Fetch fresh from Alpaca
+            try:
+                account_info = self.broker_executor.get_account_info()
+
+                # Get positions from current portfolio_state (already synced from position_manager)
+                positions_list = self.portfolio_state.positions
+
+                fresh_state = PortfolioState(
+                    cash=float(account_info['cash']),
+                    equity=float(account_info['equity']),
+                    positions=positions_list,
+                    daily_pnl=0.0  # Could calculate from last_equity
+                )
+
+                logger.debug(
+                    f"Portfolio state source: Alpaca API "
+                    f"(equity=${fresh_state.equity:,.2f}, cash=${fresh_state.cash:,.2f})"
+                )
+                return fresh_state
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch fresh portfolio state from Alpaca: {e}")
+                logger.warning("Using last known state as fallback")
+                return self.portfolio_state
+
+        else:
+            # Fallback to tracked state
+            logger.debug("Portfolio state source: Tracked state (fallback)")
+            return self.portfolio_state
 
     def run_decision_cycle(self):
         """
@@ -245,7 +354,7 @@ class ActiveTraderLLM:
             for symbol in active_universe:
                 if symbol in features_dict:
                     # Get current price from features
-                    current_price = features_dict[symbol].price
+                    current_price = features_dict[symbol].close
                     symbol_data[symbol] = {'price': current_price}
 
             # Build current_prices dict
@@ -261,11 +370,29 @@ class ActiveTraderLLM:
                             f"(reason: {pos.exit_reason}, P&L: ${pos.realized_pnl:.2f})"
                         )
 
-            # Get current portfolio state
-            portfolio_state = self.position_manager.get_portfolio_state(current_prices)
-            logger.info(f"Portfolio: {len(portfolio_state.get('positions', []))} open positions, "
-                       f"Exposure: {portfolio_state.get('total_exposure_pct', 0):.1f}%, "
-                       f"Unrealized P&L: ${portfolio_state.get('total_unrealized_pnl', 0):.2f}")
+            # Get current portfolio state from position manager (returns dict)
+            portfolio_dict = self.position_manager.get_portfolio_state(current_prices, self.portfolio_state.equity)
+
+            # Update positions list in portfolio_state
+            self.portfolio_state.positions = portfolio_dict.get('open_positions', [])
+
+            # In paper-live/live mode, refresh cash/equity from Alpaca
+            if self.config.mode in ["paper-live", "live"] and self.broker_executor:
+                try:
+                    account_info = self.broker_executor.get_account_info()
+                    self.portfolio_state.cash = float(account_info['cash'])
+                    self.portfolio_state.equity = float(account_info['equity'])
+                    logger.debug(f"Refreshed portfolio state from Alpaca: equity=${self.portfolio_state.equity:,.2f}, cash=${self.portfolio_state.cash:,.2f}")
+                except Exception as e:
+                    logger.warning(f"Could not refresh account info from Alpaca: {e}")
+            # Note: In backtest mode, cash and equity are updated by SimulatedBroker
+
+            logger.info(
+                f"Portfolio: {len(portfolio_dict.get('open_positions', []))} open positions, "
+                f"Equity: ${self.portfolio_state.equity:,.2f}, "
+                f"Cash: ${self.portfolio_state.cash:,.2f}, "
+                f"Unrealized P&L: ${portfolio_dict.get('total_unrealized_pnl', 0):.2f}"
+            )
 
             # Step 3: Run analysts
             logger.info("Step 3: Running analyst agents...")
@@ -300,28 +427,21 @@ class ActiveTraderLLM:
                         logger.warning(f"{symbol}: Sentiment analysis returned None (stub mode)")
                         # Don't add sentiment to analyst_outputs - trading will proceed without it
 
-            # Breadth analyst (market-wide)
-            breadth_signal = self.breadth_analyst.analyze(market_snapshot.model_dump())
-
-            # Abort if breadth analysis failed
-            if breadth_signal is None:
-                logger.error("Breadth analysis failed - cannot determine market regime")
-                logger.error("Aborting trading cycle - market regime required for strategy selection")
-                return
-
-            logger.info(f"Breadth analysis: {breadth_signal.regime} (confidence: {breadth_signal.confidence:.2f})")
-
             # Macro analyst (if enabled)
-            # NOTE: VIX data not currently available in MarketSnapshot
-            # TODO: Implement VIX data fetching (e.g., from yfinance ^VIX)
-            if self.macro_analyst:
-                logger.warning("Macro analyst enabled but VIX data not available")
-                macro_signal = self.macro_analyst.analyze(None)  # Pass None
+            macro_signal = None
+            if self.macro_analyst and self.macro_ingestor:
+                logger.info("Fetching macro-economic data...")
+                macro_snapshot = self.macro_ingestor.fetch_all()
+                macro_signal = self.macro_analyst.analyze(macro_snapshot)
+
                 if macro_signal:
-                    logger.info(f"Macro analysis: {macro_signal.bias} (confidence: {macro_signal.confidence:.2f})")
+                    logger.info(f"Macro environment: {macro_signal.market_environment} (confidence: {macro_signal.confidence:.2f})")
+
+                    # Add macro context to ALL symbols
+                    for symbol in analyst_outputs.keys():
+                        analyst_outputs[symbol]['macro'] = macro_signal.model_dump()
                 else:
-                    logger.warning("Macro analysis returned None (stub mode)")
-                    # Don't add macro to analyst context - trading will proceed without it
+                    logger.warning("Macro analysis returned None - trading will proceed without macro context")
 
             # Step 4: Researcher debate
             logger.info("Step 4: Running researcher debate...")
@@ -348,28 +468,77 @@ class ActiveTraderLLM:
 
                 logger.info(f"{symbol} debate: Bull {bull.confidence:.2f} vs Bear {bear.confidence:.2f}")
 
-            # Step 5: Generate trade plans
+            # Step 5: Generate trade plans (Fully Autonomous LLM Decision)
             logger.info("Step 5: Generating trade plans...")
             trade_plans = []
+
+            # Build account state for LLM context
+            portfolio_dict = self.position_manager.get_portfolio_state(current_prices, self.portfolio_state.equity)
+            account_state = {
+                'cash': self.portfolio_state.cash,
+                'equity': self.portfolio_state.equity,
+                'position_count': portfolio_dict['position_count'],
+                'total_exposure': portfolio_dict['total_exposure'],
+                'exposure_pct': portfolio_dict['total_exposure_pct']
+            }
 
             for symbol in debates.keys():
                 bull, bear = debates[symbol]['bull'], debates[symbol]['bear']
 
-                from researchers.bull_bear import BullThesis, BearThesis
+                from active_trader_llm.researchers.bull_bear import BullThesis, BearThesis
                 bull_thesis = BullThesis(**bull)
                 bear_thesis = BearThesis(**bear)
 
+                # Check if we already have a position in this symbol
+                existing_position = None
+                if self.position_manager.has_position(symbol):
+                    # Get position details for LLM to decide hold/close
+                    open_positions = [p for p in portfolio_dict['open_positions'] if p['symbol'] == symbol]
+                    if open_positions:
+                        existing_position = open_positions[0]
+
+                # Call trader agent with full context (nof1.ai style)
                 plan = self.trader_agent.decide(
                     symbol,
                     analyst_outputs[symbol],
                     (bull_thesis, bear_thesis),
-                    [s.model_dump() for s in self.config.strategies],
-                    self.config.risk_parameters.model_dump()
+                    self.config.risk_parameters.model_dump(),
+                    memory_context=None,  # TODO: Add recent performance context
+                    existing_position=existing_position,
+                    account_state=account_state
                 )
 
                 if plan:
-                    trade_plans.append(plan)
-                    logger.info(f"Trade plan generated for {symbol}: {plan.direction} {plan.strategy}")
+                    # Handle different action types
+                    if plan.action == 'close':
+                        # LLM decided to close existing position
+                        logger.info(f"{symbol}: LLM decided to CLOSE position (invalidation triggered)")
+                        if self.position_manager.has_position(symbol):
+                            closed_pos = self.position_manager.close_position(
+                                symbol=symbol,
+                                exit_price=current_prices.get(symbol, 0.0),
+                                exit_reason=f"LLM decision: {plan.rationale[:100]}"
+                            )
+                            logger.info(f"Position CLOSED: {symbol} @ {closed_pos.exit_price:.2f}, P&L: ${closed_pos.realized_pnl:.2f}")
+                        continue
+
+                    elif plan.action == 'hold':
+                        # LLM decided to keep existing position
+                        logger.info(f"{symbol}: LLM decided to HOLD existing position (confidence: {plan.confidence:.2f})")
+                        continue
+
+                    elif plan.action == 'pass':
+                        # LLM decided not to trade
+                        logger.info(f"{symbol}: LLM passed on opportunity")
+                        continue
+
+                    elif plan.action in ['open_long', 'open_short']:
+                        # LLM decided to open new position
+                        trade_plans.append(plan)
+                        logger.info(
+                            f"Trade plan for {symbol}: {plan.action} @ {plan.entry:.2f} "
+                            f"(size: {plan.position_size_pct*100:.1f}%, confidence: {plan.confidence:.2f})"
+                        )
 
             if not trade_plans:
                 logger.info("No trade plans generated this cycle.")
@@ -380,7 +549,9 @@ class ActiveTraderLLM:
             approved_plans = []
 
             for plan in trade_plans:
-                decision = self.risk_manager.evaluate(plan, current_prices)
+                # Fetch fresh portfolio state (from Alpaca in live mode)
+                current_portfolio = self.get_current_portfolio_state()
+                decision = self.risk_manager.evaluate(plan, current_portfolio, current_prices)
 
                 # Log decision
                 trade_id = str(uuid.uuid4())
@@ -408,46 +579,68 @@ class ActiveTraderLLM:
             logger.info(f"\nApproved: {len(approved_plans)}/{len(trade_plans)} trade plans")
 
             # Step 7: Execution
-            if self.config.mode == "backtest":
-                logger.info("Step 7: Simulated execution (backtest mode)...")
-                initial_capital = 100000.0  # Should match self.portfolio_state.cash
+            if self.config.mode == "backtest" and self.simulated_broker:
+                logger.info("Step 7: Simulated execution via SimulatedBroker...")
 
                 for trade_id, plan in approved_plans:
-                    # Simulate execution with small slippage
-                    if plan.direction == "long":
-                        fill_price = plan.entry + 0.02  # Simulated slippage
+                    # Submit trade to simulated broker
+                    result = self.simulated_broker.submit_trade(plan)
+
+                    if result.success:
+                        # Log execution
+                        self.json_logger.log_execution(
+                            trade_id=trade_id,
+                            timestamp=result.timestamp,
+                            symbol=plan.symbol,
+                            direction=plan.direction,
+                            filled_price=result.filled_price,
+                            filled_qty=result.filled_qty,
+                            slippage=result.filled_price - plan.entry,
+                            execution_method="simulated"
+                        )
+
+                        logger.info(f"Simulated execution: {plan.symbol} @ {result.filled_price:.2f}")
+
+                        # Open position in position manager
+                        opened_position = self.position_manager.open_position(
+                            symbol=plan.symbol,
+                            direction=plan.direction,
+                            entry_price=result.filled_price,
+                            stop_loss=plan.stop_loss,
+                            take_profit=plan.take_profit,
+                            shares=int(result.filled_qty),
+                            strategy=None,  # Strategy removed - LLM decides dynamically
+                            position_size_pct=plan.position_size_pct * 100,  # Convert to percentage
+                            fill_timestamp=datetime.now()
+                        )
+
+                        logger.info(
+                            f"Position OPENED: {opened_position.symbol} {opened_position.direction} "
+                            f"@ {opened_position.entry_price:.2f}, {opened_position.shares} shares, "
+                            f"Stop: {opened_position.stop_loss:.2f}, Target: {opened_position.take_profit:.2f}"
+                        )
+
+                        # Immediately update portfolio state for intra-cycle accuracy
+                        # This ensures subsequent trades in the same cycle see updated cash
+                        position_cost = result.filled_price * result.filled_qty
+                        commission = self.simulated_broker.commission_per_trade if self.simulated_broker else 1.0
+                        total_cost = position_cost + commission
+
+                        # Deduct from portfolio_state
+                        self.portfolio_state.cash -= total_cost
+
+                        # Update equity (cash + all position values)
+                        open_positions = self.position_manager.get_open_positions()
+                        positions_value = sum([p.entry_price * p.shares for p in open_positions])
+                        self.portfolio_state.equity = self.portfolio_state.cash + positions_value
+
+                        logger.info(
+                            f"Portfolio state updated: cash=${self.portfolio_state.cash:.2f}, "
+                            f"equity=${self.portfolio_state.equity:.2f} (deducted ${total_cost:.2f})"
+                        )
+
                     else:
-                        fill_price = plan.entry - 0.02
-
-                    # Calculate shares based on position size percentage
-                    shares = int((initial_capital * plan.position_size_pct) / fill_price)
-
-                    self.json_logger.log_execution(
-                        trade_id=trade_id,
-                        timestamp=datetime.now().isoformat(),
-                        symbol=plan.symbol,
-                        direction=plan.direction,
-                        filled_price=fill_price,
-                        filled_qty=shares,
-                        slippage=0.02,
-                        execution_method="backtest"
-                    )
-
-                    logger.info(f"Simulated execution: {plan.symbol} @ {fill_price:.2f}")
-
-                    # Record position in database
-                    opened_position = self.position_manager.open_position(
-                        plan=plan,
-                        fill_price=fill_price,
-                        fill_timestamp=datetime.now(),
-                        shares=shares
-                    )
-
-                    logger.info(
-                        f"Position OPENED: {opened_position.symbol} {opened_position.direction} "
-                        f"@ {opened_position.entry_price:.2f}, {opened_position.shares} shares, "
-                        f"Stop: {opened_position.stop_loss:.2f}, Target: {opened_position.take_profit:.2f}"
-                    )
+                        logger.error(f"Simulated order failed for {plan.symbol}: {result.error_message}")
 
             elif self.config.mode in ["paper-live", "live"] and self.broker_executor:
                 logger.info(f"Step 7: Live execution via {self.config.execution.broker}...")
@@ -485,10 +678,15 @@ class ActiveTraderLLM:
                             # Record position in database (if filled)
                             if filled_qty > 0:
                                 opened_position = self.position_manager.open_position(
-                                    plan=plan,
-                                    fill_price=filled_price,
-                                    fill_timestamp=datetime.now(),
-                                    shares=int(filled_qty)
+                                    symbol=plan.symbol,
+                                    direction=plan.direction,
+                                    entry_price=filled_price,
+                                    stop_loss=plan.stop_loss,
+                                    take_profit=plan.take_profit,
+                                    shares=int(filled_qty),
+                                    strategy=None,  # Strategy removed - LLM decides dynamically
+                                    position_size_pct=plan.position_size_pct * 100,  # Convert to percentage
+                                    fill_timestamp=datetime.now()
                                 )
 
                                 logger.info(
@@ -548,59 +746,29 @@ class ActiveTraderLLM:
         """
         Execute end-of-day learning update.
 
-        - Update strategy statistics
-        - Check for strategy degradation
-        - Switch strategies if needed
+        - Display portfolio performance summary
+        - Log recent trade statistics
+
+        REMOVED: Strategy switching - LLM decides dynamically
         """
         logger.info("\n" + "=" * 80)
-        logger.info("LEARNING UPDATE")
+        logger.info("LEARNING UPDATE (Performance Review)")
         logger.info("=" * 80)
 
         try:
-            # Get current regime
-            # In production, this would use latest market snapshot
-            current_regime = "trending_bull"  # Placeholder
+            # Display recent performance summary
+            recent_trades = self.memory.get_recent_trades(limit=50)
 
-            # Check if current strategy needs switching
-            available_strategies = [s.name for s in self.config.strategies if s.enabled]
+            if recent_trades:
+                wins = sum(1 for t in recent_trades if t.pnl and t.pnl > 0)
+                total_pnl = sum(t.pnl for t in recent_trades if t.pnl)
 
-            recommendation = self.strategy_monitor.monitor_and_switch(
-                self.current_strategy,
-                available_strategies,
-                current_regime
-            )
-
-            if recommendation:
-                logger.info(f"\nSTRATEGY SWITCH RECOMMENDED:")
-                logger.info(f"  From: {recommendation.current_strategy}")
-                logger.info(f"  To: {recommendation.recommended_strategy}")
-                logger.info(f"  Reason: {recommendation.reason}")
-                logger.info(f"  Confidence: {recommendation.confidence:.2f}")
-
-                # Log the switch
-                self.json_logger.log_strategy_switch(
-                    timestamp=datetime.now().isoformat(),
-                    old_strategy=recommendation.current_strategy,
-                    new_strategy=recommendation.recommended_strategy,
-                    regime=current_regime,
-                    reason=recommendation.reason,
-                    metrics=recommendation.metrics
-                )
-
-                # Apply the switch
-                self.current_strategy = recommendation.recommended_strategy
-                logger.info(f"Switched to {self.current_strategy}")
-
+                logger.info(f"\nRECENT PERFORMANCE (Last {len(recent_trades)} trades):")
+                logger.info(f"  Win Rate: {wins}/{len(recent_trades)} ({100*wins/len(recent_trades):.1f}%)")
+                logger.info(f"  Total P&L: ${total_pnl:,.2f}")
+                logger.info(f"  Avg per trade: ${total_pnl/len(recent_trades):,.2f}")
             else:
-                logger.info(f"Current strategy ({self.current_strategy}) performing adequately")
-
-            # Display performance summary
-            stats = self.memory.get_strategy_stats()
-            logger.info("\nSTRATEGY PERFORMANCE SUMMARY:")
-            for s in stats:
-                logger.info(f"{s.strategy_name} ({s.regime}): "
-                           f"WR={s.win_rate:.1%}, Net=${s.total_pnl:.2f}, "
-                           f"Trades={s.total_trades}")
+                logger.info("\nNo recent trades to analyze")
 
         except Exception as e:
             logger.error(f"Error in learning update: {e}", exc_info=True)

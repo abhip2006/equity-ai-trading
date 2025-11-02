@@ -86,8 +86,8 @@ class ExitMonitor:
             logger.warning(f"Position {position.symbol} missing stop_loss or take_profit")
             return (False, None)
 
-        # Get position direction
-        is_long = position.side.lower() == 'long' or position.quantity > 0
+        # Get position direction (Position model uses 'direction' and 'shares')
+        is_long = position.direction.lower() == 'long'
 
         if is_long:
             # Long position exit conditions
@@ -154,7 +154,7 @@ class ExitMonitor:
 
         # Call position_manager.close_position()
         closed_position = self.position_manager.close_position(
-            position=position,
+            symbol=position.symbol,
             exit_price=current_price,
             exit_reason=reason
         )

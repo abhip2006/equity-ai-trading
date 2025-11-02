@@ -31,3 +31,8 @@ logs/
 
 # System files
 Thumbs.db
+
+# Database files (contain sensitive data)
+data/*.db
+logs/*.jsonl
+*.db

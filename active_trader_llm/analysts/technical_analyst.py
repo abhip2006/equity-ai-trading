@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Dict, Literal, Optional
 from pydantic import BaseModel, Field
-from anthropic import Anthropic
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -49,15 +49,15 @@ Analyze the pre-calculated indicators and determine your trading signal. Be conc
 
 Avoid overfitting to single indicators. Look for confluence."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-3.5-turbo"):
         """
         Initialize Technical Analyst.
 
         Args:
-            api_key: Anthropic API key (or use environment variable)
-            model: Claude model to use
+            api_key: OpenAI API key (or use environment variable)
+            model: OpenAI model to use (gpt-4o, gpt-4-turbo, gpt-3.5-turbo)
         """
-        self.client = Anthropic(api_key=api_key)
+        self.client = OpenAI(api_key=api_key)
         self.model = model
 
     def _build_analysis_prompt(
@@ -77,19 +77,19 @@ Avoid overfitting to single indicators. Look for confluence."""
         close = ohlcv.get('close', 0.0)
         volume = ohlcv.get('volume', 0)
 
-        # Get daily indicators (using actual indicators we calculate)
-        rsi = daily.get('rsi')
-        atr = daily.get('atr')
-        ema_5 = daily.get('ema_5')
-        ema_10 = daily.get('ema_10')
-        ema_20 = daily.get('ema_20')
-        sma_50 = daily.get('sma_50')
-        sma_200 = daily.get('sma_200')
+        # Get daily indicators (using actual keys from daily_indicators.py)
+        rsi = daily.get('RSI_14_daily')
+        atr = daily.get('ATR_14_daily')
+        ema_5 = daily.get('EMA_5_daily')
+        ema_10 = daily.get('EMA_10_daily')
+        ema_20 = daily.get('EMA_20_daily')
+        sma_50 = daily.get('SMA_50_daily')
+        sma_200 = daily.get('SMA_200_daily')
 
-        # Get weekly indicators
-        weekly_ema_10 = weekly.get('ema_10')
-        weekly_sma_21 = weekly.get('sma_21')
-        weekly_sma_50 = weekly.get('sma_50')
+        # Get weekly indicators (using actual keys from weekly_indicators.py)
+        weekly_ema_10 = weekly.get('EMA_10_weekly')
+        weekly_sma_21 = weekly.get('SMA_21_weekly')
+        weekly_sma_50 = weekly.get('SMA_50_weekly')
 
         # Build prompt with available indicators
         prompt = f"""Analyze {symbol} and generate a trading signal.
@@ -170,7 +170,8 @@ MARKET CONTEXT:
         daily = features.get('daily_indicators', {})
 
         price = ohlcv.get('close')
-        atr = daily.get('atr')
+        # ATR is stored as 'ATR_14_daily' with period and timeframe suffix
+        atr = daily.get('ATR_14_daily') or daily.get('atr')
 
         # Abort if critical data is missing
         if price is None or price == 0.0:
@@ -183,16 +184,18 @@ MARKET CONTEXT:
         prompt = self._build_analysis_prompt(symbol, features, market_snapshot, memory_context)
 
         try:
-            response = self.client.messages.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 max_tokens=500,
                 temperature=0.3,
-                system=self.SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ]
             )
 
             # Extract JSON from response
-            content = response.content[0].text.strip()
+            content = response.choices[0].message.content.strip()
 
             # Handle potential markdown code blocks
             if content.startswith("```"):
@@ -287,7 +290,7 @@ if __name__ == "__main__":
         'advance_decline_ratio': 0.8
     }
 
-    analyst = TechnicalAnalyst(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    analyst = TechnicalAnalyst(api_key=os.getenv("OPENAI_API_KEY"))
     signal = analyst.analyze("AAPL", sample_features, sample_market)
 
     print(f"\nSignal: {signal.signal}")

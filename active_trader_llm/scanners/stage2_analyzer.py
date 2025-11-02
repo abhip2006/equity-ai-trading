@@ -14,7 +14,7 @@ import json
 import logging
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
-from anthropic import Anthropic
+from openai import OpenAI
 
 from .raw_data_scanner import TechnicalIndicators, RawDataScanner
 from .stage1_analyzer import Stage1Guidance
@@ -74,16 +74,16 @@ CRITICAL RULES:
 4. Consider Stage 1 guidance (market bias, focus patterns)
 5. Look for confluence of multiple indicators"""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022", temperature: float = 0.3):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-3.5-turbo", temperature: float = 0.3):
         """
         Initialize Stage 2 Analyzer.
 
         Args:
-            api_key: Anthropic API key
-            model: Claude model to use
+            api_key: OpenAI API key
+            model: OpenAI model to use (gpt-4o, gpt-4-turbo, gpt-3.5-turbo)
             temperature: Temperature for LLM (0.3 for consistency)
         """
-        self.client = Anthropic(api_key=api_key)
+        self.client = OpenAI(api_key=api_key)
         self.model = model
         self.temperature = temperature
         self.scanner = RawDataScanner()
@@ -158,18 +158,18 @@ Return your analysis as JSON:"""
         try:
             logger.info(f"Calling LLM for Stage 2 batch analysis ({len(batch_indicators)} stocks)...")
 
-            response = self.client.messages.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 max_tokens=3000,
                 temperature=self.temperature,
-                system=self.SYSTEM_PROMPT,
                 messages=[
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ]
             )
 
             # Extract JSON from response
-            content = response.content[0].text
+            content = response.choices[0].message.content
 
             # Try to parse JSON
             try:
@@ -259,7 +259,7 @@ if __name__ == "__main__":
 
    
 
-    analyzer = Stage2Analyzer(api_key=os.getenv('ANTHROPIC_API_KEY'))
+    analyzer = Stage2Analyzer(api_key=os.getenv('OPENAI_API_KEY'))
 
     # Analyze batch
     result = analyzer.analyze_batch(

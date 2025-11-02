@@ -47,6 +47,8 @@ class ScannerOrchestrator:
         alpaca_api_key: Optional[str] = None,
         alpaca_secret_key: Optional[str] = None,
         alpaca_base_url: Optional[str] = None,
+        paper: bool = True,
+        openai_api_key: Optional[str] = None,
         anthropic_api_key: Optional[str] = None,
         db_path: str = "data/scanner.db",
         requests_per_minute: int = 200
@@ -59,6 +61,8 @@ class ScannerOrchestrator:
             alpaca_api_key: Alpaca API key for universe loading and bars
             alpaca_secret_key: Alpaca secret key
             alpaca_base_url: Alpaca base URL
+            paper: Use paper trading endpoint (default True for safety)
+            openai_api_key: OpenAI API key for LLM calls (legacy)
             anthropic_api_key: Anthropic API key for LLM calls
             db_path: Path to scanner database
             requests_per_minute: Alpaca rate limit (200 standard, 1000 unlimited)
@@ -84,13 +88,16 @@ class ScannerOrchestrator:
             alpaca_api_key=alpaca_api_key,
             alpaca_secret_key=alpaca_secret_key,
             alpaca_base_url=alpaca_base_url,
+            paper=paper,
             db_path=db_path
         )
         self.market_aggregator = MarketAggregator(data_fetcher=data_fetcher)
-        self.stage1_analyzer = Stage1Analyzer(api_key=anthropic_api_key)
+        # Use anthropic_api_key if provided, otherwise fall back to openai_api_key
+        llm_api_key = anthropic_api_key or openai_api_key
+        self.stage1_analyzer = Stage1Analyzer(api_key=llm_api_key)
         self.programmatic_filter = ProgrammaticFilter()
         self.raw_data_scanner = RawDataScanner(data_fetcher=data_fetcher)
-        self.stage2_analyzer = Stage2Analyzer(api_key=anthropic_api_key)
+        self.stage2_analyzer = Stage2Analyzer(api_key=llm_api_key)
         self.scanner_db = ScannerDB(db_path=db_path)
 
     def run_full_scan(

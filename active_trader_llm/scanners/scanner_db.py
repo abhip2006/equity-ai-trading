@@ -129,7 +129,8 @@ class ScannerDB:
         self,
         sector: Optional[str] = None,
         optionable_only: bool = True,
-        min_volume: Optional[float] = None
+        min_volume: Optional[float] = None,
+        warn_missing_data: bool = True
     ) -> List[TradableStock]:
         """
         Retrieve tradable universe with optional filters.
@@ -138,6 +139,7 @@ class ScannerDB:
             sector: Filter by sector
             optionable_only: Only optionable stocks
             min_volume: Minimum 20-day average volume
+            warn_missing_data: Log warnings if critical data is missing
 
         Returns:
             List of TradableStock objects
@@ -164,8 +166,13 @@ class ScannerDB:
         conn.close()
 
         stocks = []
+        missing_sector = 0
+        missing_market_cap = 0
+        missing_volume = 0
+        missing_price = 0
+
         for row in rows:
-            stocks.append(TradableStock(
+            stock = TradableStock(
                 symbol=row[0],
                 sector=row[1],
                 market_cap=row[2],
@@ -173,7 +180,42 @@ class ScannerDB:
                 last_price=row[4],
                 optionable=bool(row[5]),
                 updated_at=row[6]
-            ))
+            )
+            stocks.append(stock)
+
+            # Track missing data
+            if stock.sector == "Unknown" or stock.sector is None:
+                missing_sector += 1
+            if stock.market_cap is None:
+                missing_market_cap += 1
+            if stock.avg_volume_20d is None:
+                missing_volume += 1
+            if stock.last_price is None:
+                missing_price += 1
+
+        # Log data quality warnings
+        if warn_missing_data and stocks:
+            total = len(stocks)
+            if missing_sector > total * 0.1:
+                logger.warning(
+                    f"Data quality: {missing_sector}/{total} stocks ({missing_sector/total*100:.1f}%) "
+                    f"have missing/unknown sector"
+                )
+            if missing_market_cap > total * 0.1:
+                logger.warning(
+                    f"Data quality: {missing_market_cap}/{total} stocks ({missing_market_cap/total*100:.1f}%) "
+                    f"have missing market cap"
+                )
+            if missing_volume > total * 0.1:
+                logger.warning(
+                    f"Data quality: {missing_volume}/{total} stocks ({missing_volume/total*100:.1f}%) "
+                    f"have missing volume data"
+                )
+            if missing_price > total * 0.1:
+                logger.warning(
+                    f"Data quality: {missing_price}/{total} stocks ({missing_price/total*100:.1f}%) "
+                    f"have missing price data"
+                )
 
         return stocks
 

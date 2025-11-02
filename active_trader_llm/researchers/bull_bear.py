@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
-from anthropic import Anthropic
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +72,9 @@ Both researchers should:
 - Be intellectually honest about risks/opportunities
 - Provide 3-5 specific points each"""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-3.5-turbo"):
         """Initialize researcher debate"""
-        self.client = Anthropic(api_key=api_key)
+        self.client = OpenAI(api_key=api_key)
         self.model = model
 
     def _build_debate_prompt(
@@ -158,15 +158,17 @@ Macro:
         prompt = self._build_debate_prompt(symbol, analyst_outputs, market_snapshot, memory_summary)
 
         try:
-            response = self.client.messages.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 max_tokens=800,
                 temperature=0.4,
-                system=self.SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ]
             )
 
-            content = response.content[0].text.strip()
+            content = response.choices[0].message.content.strip()
 
             # Handle markdown code blocks
             if content.startswith("```"):
@@ -253,7 +255,7 @@ if __name__ == "__main__":
         'breadth_score': 0.45
     }
 
-    debate = ResearcherDebate(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    debate = ResearcherDebate(api_key=os.getenv("OPENAI_API_KEY"))
     bull, bear = debate.debate("AAPL", sample_analyst_outputs, sample_market)
 
     print(f"\nBull Thesis ({bull.confidence:.2f}):")

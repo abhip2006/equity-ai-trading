@@ -8,6 +8,9 @@ import logging
 from typing import List, Optional, Dict
 from datetime import datetime
 import os
+import yfinance as yf
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetAssetsRequest
@@ -16,6 +19,23 @@ from alpaca.trading.enums import AssetClass, AssetStatus
 from .scanner_db import ScannerDB, TradableStock
 
 logger = logging.getLogger(__name__)
+
+
+# GICS Sector mapping to standardized categories
+SECTOR_MAPPING = {
+    'Technology': 'Technology',
+    'Communication Services': 'Communication',
+    'Consumer Cyclical': 'Consumer Discretionary',
+    'Consumer Defensive': 'Consumer Staples',
+    'Financial Services': 'Financials',
+    'Healthcare': 'Healthcare',
+    'Industrials': 'Industrials',
+    'Basic Materials': 'Materials',
+    'Energy': 'Energy',
+    'Real Estate': 'Real Estate',
+    'Utilities': 'Utilities',
+    'Financial': 'Financials',  # Alternative naming
+}
 
 
 class UniverseLoader:
@@ -31,6 +51,7 @@ class UniverseLoader:
         alpaca_api_key: Optional[str] = None,
         alpaca_secret_key: Optional[str] = None,
         alpaca_base_url: Optional[str] = None,
+        paper: bool = True,
         db_path: str = "data/scanner.db"
     ):
         """
@@ -40,11 +61,13 @@ class UniverseLoader:
             alpaca_api_key: Alpaca API key (or uses ALPACA_API_KEY env var)
             alpaca_secret_key: Alpaca secret key (or uses ALPACA_SECRET_KEY env var)
             alpaca_base_url: Alpaca base URL (or uses ALPACA_BASE_URL env var)
+            paper: Use paper trading endpoint (default True for safety)
             db_path: Path to scanner database
         """
         self.api_key = alpaca_api_key or os.getenv('ALPACA_API_KEY')
         self.secret_key = alpaca_secret_key or os.getenv('ALPACA_SECRET_KEY')
         self.base_url = alpaca_base_url or os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets')
+        self.paper = paper
 
         self.db = ScannerDB(db_path=db_path)
         self.trading_client = None
@@ -55,9 +78,10 @@ class UniverseLoader:
                 self.trading_client = TradingClient(
                     api_key=self.api_key,
                     secret_key=self.secret_key,
-                    paper=True  # Always use paper for safety
+                    paper=self.paper
                 )
-                logger.info("Alpaca trading client initialized")
+                mode = "PAPER" if self.paper else "LIVE"
+                logger.info(f"Alpaca trading client initialized ({mode} mode)")
             except Exception as e:
                 logger.warning(f"Failed to initialize Alpaca client: {e}")
                 self.trading_client = None
@@ -66,7 +90,8 @@ class UniverseLoader:
         self,
         force_refresh: bool = False,
         refresh_hours: int = 24,
-        optionable_only: bool = True
+        optionable_only: bool = True,
+        enrich_metadata: bool = False
     ) -> List[TradableStock]:
         """
         Load tradable universe from cache or Alpaca API.
@@ -75,6 +100,7 @@ class UniverseLoader:
             force_refresh: Force refresh from API regardless of cache age
             refresh_hours: Max cache age in hours before refresh
             optionable_only: Only return optionable stocks
+            enrich_metadata: Fetch real sector, market cap, volume, price via yfinance
 
         Returns:
             List of TradableStock objects
@@ -121,16 +147,35 @@ class UniverseLoader:
 
                 stock = TradableStock(
                     symbol=asset.symbol,
-                    sector=asset.name if hasattr(asset, 'name') else "Unknown",  # Will update with proper sector later
+                    sector="Unknown",  # Will enrich with real sector if requested
                     market_cap=None,  # Not provided by assets endpoint
-                    avg_volume_20d=None,  # Will be calculated later if needed
-                    last_price=None,  # Will be fetched separately if needed
+                    avg_volume_20d=None,  # Will enrich if requested
+                    last_price=None,  # Will enrich if requested
                     optionable=asset.options_trading if hasattr(asset, 'options_trading') else False,
                     updated_at=datetime.now().isoformat()
                 )
                 stocks.append(stock)
 
             logger.info(f"Filtered to {len(stocks)} tradable stocks")
+
+            # Enrich with metadata if requested
+            if enrich_metadata and stocks:
+                logger.info("Enriching universe with metadata (sector, market cap, volume, price)...")
+                symbols = [stock.symbol for stock in stocks]
+                metadata = self.refresh_universe_metadata(symbols)
+
+                # Merge enriched data
+                enriched_count = 0
+                for stock in stocks:
+                    if stock.symbol in metadata:
+                        stock_meta = metadata[stock.symbol]
+                        stock.sector = stock_meta.get('sector', stock.sector)
+                        stock.market_cap = stock_meta.get('market_cap', stock.market_cap)
+                        stock.avg_volume_20d = stock_meta.get('avg_volume', stock.avg_volume_20d)
+                        stock.last_price = stock_meta.get('last_price', stock.last_price)
+                        enriched_count += 1
+
+                logger.info(f"Enriched {enriched_count}/{len(stocks)} stocks ({enriched_count/len(stocks)*100:.1f}%)")
 
             # Cache in database
             self.db.save_tradable_universe(stocks)
@@ -157,11 +202,25 @@ class UniverseLoader:
             Dictionary mapping sector -> list of symbols
         """
         sectors = {}
+        unknown_count = 0
+
         for stock in universe:
             sector = stock.sector or "Unknown"
             if sector not in sectors:
                 sectors[sector] = []
             sectors[sector].append(stock.symbol)
+
+            if sector == "Unknown":
+                unknown_count += 1
+
+        # Warn if significant portion has unknown sector
+        if unknown_count > 0:
+            unknown_pct = unknown_count / len(universe) * 100 if universe else 0
+            if unknown_pct > 10:
+                logger.warning(
+                    f"Sector data quality issue: {unknown_count}/{len(universe)} stocks ({unknown_pct:.1f}%) "
+                    f"have 'Unknown' sector. Consider running with enrich_metadata=True to fetch real sectors."
+                )
 
         return sectors
 
@@ -178,23 +237,73 @@ class UniverseLoader:
         """
         return [stock.symbol for stock in universe if stock.sector == sector]
 
-    def refresh_universe_metadata(self, symbols: List[str]) -> Dict[str, Dict]:
+    def refresh_universe_metadata(self, symbols: List[str], batch_size: int = 50) -> Dict[str, Dict]:
         """
-        Fetch additional metadata for symbols (sectors, market cap, etc.)
+        Fetch additional metadata for symbols via yfinance.
 
-        This is a placeholder for enriching stock data with real sector information.
-        In production, you would use Alpaca's market data API or another data source.
+        Fetches: sector, market cap, average volume, last price
 
         Args:
             symbols: List of symbols to enrich
+            batch_size: Number of symbols to fetch per batch (default 50)
 
         Returns:
-            Dictionary mapping symbol -> metadata dict
+            Dictionary mapping symbol -> metadata dict with keys:
+            - sector: Standardized sector name
+            - market_cap: Market capitalization in USD
+            - avg_volume: Average daily volume (20-day)
+            - last_price: Most recent close price
         """
-        # TODO: Implement using Alpaca data API or yfinance as fallback
-        # For now, return empty dict
-        logger.warning("refresh_universe_metadata not fully implemented")
-        return {}
+        logger.info(f"Fetching metadata for {len(symbols)} symbols via yfinance...")
+
+        metadata = {}
+        total_batches = (len(symbols) + batch_size - 1) // batch_size
+
+        for batch_idx in range(0, len(symbols), batch_size):
+            batch = symbols[batch_idx:batch_idx + batch_size]
+            batch_num = batch_idx // batch_size + 1
+
+            logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} symbols)")
+
+            try:
+                # Fetch batch data using yfinance Tickers
+                tickers = yf.Tickers(' '.join(batch))
+
+                for symbol in batch:
+                    try:
+                        ticker = tickers.tickers.get(symbol)
+                        if not ticker:
+                            continue
+
+                        info = ticker.info
+
+                        # Extract sector and normalize
+                        raw_sector = info.get('sector', 'Unknown')
+                        normalized_sector = SECTOR_MAPPING.get(raw_sector, raw_sector)
+
+                        metadata[symbol] = {
+                            'sector': normalized_sector,
+                            'market_cap': info.get('marketCap'),
+                            'avg_volume': info.get('averageVolume') or info.get('volume'),
+                            'last_price': info.get('regularMarketPrice') or info.get('currentPrice')
+                        }
+
+                    except Exception as e:
+                        logger.debug(f"Failed to fetch metadata for {symbol}: {e}")
+                        continue
+
+                # Rate limiting - be respectful to yfinance
+                if batch_idx + batch_size < len(symbols):
+                    time.sleep(1)
+
+            except Exception as e:
+                logger.warning(f"Error fetching batch {batch_num}: {e}")
+                continue
+
+        success_rate = len(metadata) / len(symbols) * 100 if symbols else 0
+        logger.info(f"Successfully fetched metadata for {len(metadata)}/{len(symbols)} symbols ({success_rate:.1f}%)")
+
+        return metadata
 
 
 # Example usage
