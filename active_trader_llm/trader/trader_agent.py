@@ -100,45 +100,65 @@ Be systematic, disciplined, and adaptive to changing market conditions."""
         account_state: Optional[Dict] = None
     ) -> str:
         """
-        Build fully autonomous trading prompt (modeled after nof1.ai approach)
-        Provides raw indicator time series instead of pre-interpreted signals
+        Build fully autonomous trading prompt with simplified data.
+        Provides only current indicator values and daily close price history.
         """
 
-        # Extract raw technical data
+        # Extract raw feature data (passed separately from technical signal)
+        features = analyst_outputs.get('features', {})
         tech = analyst_outputs.get('technical', {})
-        features = tech.get('features', {})
+        price_series = analyst_outputs.get('price_series', [])
 
-        # Get time series data (last 10 bars if available)
-        price_series = features.get('price_series', [tech.get('price', 0.0)])
-        ema5_series = features.get('ema_5_series', [])
-        ema10_series = features.get('ema_10_series', [])
-        ema20_series = features.get('ema_20_series', [])
-        rsi_series = features.get('rsi_series', [tech.get('rsi', 50.0)])
-        atr_series = features.get('atr_series', [tech.get('atr', 1.0)])
-        volume_series = features.get('volume_series', [])
+        # Get feature components
+        daily_indicators = features.get('daily_indicators', {})
+        weekly_indicators = features.get('weekly_indicators', {})
+        ohlcv = features.get('ohlcv', {})
 
-        # Current values
-        current_price = price_series[-1] if price_series else 0.0
-        current_ema5 = ema5_series[-1] if ema5_series else 0.0
-        current_ema10 = ema10_series[-1] if ema10_series else 0.0
-        current_ema20 = ema20_series[-1] if ema20_series else 0.0
-        current_rsi = rsi_series[-1] if rsi_series else 50.0
-        current_atr = atr_series[-1] if atr_series else 1.0
+        # Get current price
+        current_price = ohlcv.get('close', tech.get('price', 0.0))
+
+        # Extract current indicator values from daily_indicators dict
+        ema_5_daily = daily_indicators.get('EMA_5_daily', 0.0)
+        ema_10_daily = daily_indicators.get('EMA_10_daily', 0.0)
+        ema_20_daily = daily_indicators.get('EMA_20_daily', 0.0)
+        sma_50_daily = daily_indicators.get('SMA_50_daily', 0.0)
+        sma_200_daily = daily_indicators.get('SMA_200_daily', 0.0)
+
+        # Extract current indicator values from weekly_indicators dict
+        ema_10_weekly = weekly_indicators.get('EMA_10week', 0.0)
+        sma_21_weekly = weekly_indicators.get('SMA_21week', 0.0)
+        sma_30_weekly = weekly_indicators.get('SMA_30week', 0.0)
+
+        # Volume data
+        current_volume = ohlcv.get('volume', 0)
+        avg_volume = features.get('avg_volume', current_volume)  # 20-day average
+        volume_pct_diff = ((current_volume - avg_volume) / avg_volume * 100) if avg_volume > 0 else 0.0
 
         prompt = f"""=== TRADING DECISION FOR {symbol} ===
 
 ALL DATA ORDERED: OLDEST → NEWEST
 
 --- RAW TECHNICAL DATA ---
-Current: price={current_price:.2f}, ema5={current_ema5:.2f}, ema10={current_ema10:.2f}, ema20={current_ema20:.2f}, rsi={current_rsi:.1f}, atr={current_atr:.2f}
+Current Price: ${current_price:.2f}
 
-Price series (last 10 bars): {[round(p, 2) for p in price_series[-10:]]}
-EMA5 series: {[round(e, 2) for e in ema5_series[-10:]] if ema5_series else 'N/A'}
-EMA10 series: {[round(e, 2) for e in ema10_series[-10:]] if ema10_series else 'N/A'}
-EMA20 series: {[round(e, 2) for e in ema20_series[-10:]] if ema20_series else 'N/A'}
-RSI series (14-period): {[round(r, 1) for r in rsi_series[-10:]]}
-ATR series (14-period): {[round(a, 2) for a in atr_series[-10:]] if atr_series else 'N/A'}
-Volume series: {[int(v) for v in volume_series[-10:]] if volume_series else 'N/A'}
+Daily Close Price History (last 20 bars): {[round(p, 2) for p in price_series[-20:]]}
+
+Daily Indicators (current values):
+- 5 EMA: ${ema_5_daily:.2f}
+- 10 EMA: ${ema_10_daily:.2f}
+- 20 EMA: ${ema_20_daily:.2f}
+- 50 SMA: ${sma_50_daily:.2f}
+- 200 SMA: ${sma_200_daily:.2f}
+
+Weekly Indicators (current values):
+- 10 EMA: ${ema_10_weekly:.2f}
+- 21 SMA: ${sma_21_weekly:.2f}
+- 30 SMA: ${sma_30_weekly:.2f}
+
+Volume:
+- Current Daily Volume: {int(current_volume):,}
+- 20-Day Avg Volume: {int(avg_volume):,}
+- % Difference from Avg: {volume_pct_diff:+.1f}%
 """
 
         # Market regime context

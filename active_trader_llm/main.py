@@ -414,8 +414,14 @@ class ActiveTraderLLM:
                     logger.warning(f"{symbol}: Technical analysis returned None - skipping symbol")
                     continue
 
+                # Extract price series from price_df for trader_agent (last 20 bars)
+                symbol_prices = price_df[price_df['symbol'] == symbol].tail(20)
+                price_series = symbol_prices['close'].tolist() if not symbol_prices.empty else [features.close]
+
                 analyst_outputs[symbol] = {
-                    'technical': tech_signal.model_dump()
+                    'technical': tech_signal.model_dump(),
+                    'features': features.model_dump(),  # Include raw features for trader_agent
+                    'price_series': price_series  # Include historical prices for LLM
                 }
 
                 # Add optional analysts
@@ -491,7 +497,7 @@ class ActiveTraderLLM:
 
                 # Check if we already have a position in this symbol
                 existing_position = None
-                if self.position_manager.has_position(symbol):
+                if self.position_manager.has_open_position(symbol):
                     # Get position details for LLM to decide hold/close
                     open_positions = [p for p in portfolio_dict['open_positions'] if p['symbol'] == symbol]
                     if open_positions:
@@ -513,7 +519,7 @@ class ActiveTraderLLM:
                     if plan.action == 'close':
                         # LLM decided to close existing position
                         logger.info(f"{symbol}: LLM decided to CLOSE position (invalidation triggered)")
-                        if self.position_manager.has_position(symbol):
+                        if self.position_manager.has_open_position(symbol):
                             closed_pos = self.position_manager.close_position(
                                 symbol=symbol,
                                 exit_price=current_prices.get(symbol, 0.0),

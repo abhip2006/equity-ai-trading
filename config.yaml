@@ -33,10 +33,10 @@ technical_indicators:
       enabled: true
       period: 20
     sma_50:
-      enabled: false      # Disabled for backtest - requires too much data
+      enabled: true       # Enabled for LLM decision making
       period: 50
     sma_200:
-      enabled: false      # Disabled for backtest - requires too much data
+      enabled: true       # Enabled for LLM decision making
       period: 200
     rsi:
       enabled: true
@@ -48,19 +48,19 @@ technical_indicators:
   # Weekly timeframe indicators (converted from daily data)
   weekly:
     ema_10:
-      enabled: false          # Disabled for backtest - requires 50 days
+      enabled: true           # Enabled for LLM decision making - 10 week EMA
       period: 10              # 10 weeks
       conversion: 50          # 10 weeks * 5 trading days
     sma_21:
-      enabled: false          # Disabled for backtest - requires 105 days
+      enabled: true           # Enabled for LLM decision making - 21 week SMA
       period: 21              # 21 weeks
       conversion: 105         # 21 weeks * 5 trading days
     sma_30:
-      enabled: false          # Disabled for backtest - requires 150 days
+      enabled: true           # Enabled for LLM decision making - 30 week SMA
       period: 30              # 30 weeks
       conversion: 150         # 30 weeks * 5 trading days
     sma_50:
-      enabled: false          # Disabled for backtest - requires 250 days
+      enabled: false          # Not needed for LLM (requires 250 days)
       period: 50              # 50 weeks
       conversion: 250         # 50 weeks * 5 trading days
 

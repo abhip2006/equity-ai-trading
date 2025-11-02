@@ -87,9 +87,9 @@ Avoid overfitting to single indicators. Look for confluence."""
         sma_200 = daily.get('SMA_200_daily')
 
         # Get weekly indicators (using actual keys from weekly_indicators.py)
-        weekly_ema_10 = weekly.get('EMA_10_weekly')
-        weekly_sma_21 = weekly.get('SMA_21_weekly')
-        weekly_sma_50 = weekly.get('SMA_50_weekly')
+        weekly_ema_10 = weekly.get('EMA_10week')  # Note: no underscore before "week"
+        weekly_sma_21 = weekly.get('SMA_21week')  # Note: no underscore before "week"
+        weekly_sma_50 = weekly.get('SMA_50week')  # Note: no underscore before "week"
 
         # Build prompt with available indicators
         prompt = f"""Analyze {symbol} and generate a trading signal.
