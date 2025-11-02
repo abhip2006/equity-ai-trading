@@ -67,10 +67,9 @@ OUTPUT FORMAT - Return valid JSON:
 CRITICAL: The rationale field MUST contain detailed step-by-step analysis with newlines (\\n\\n) between steps. Do NOT provide a single-line summary.
 
 RISK MANAGEMENT:
-- Position size: Max 10% per trade
+- Determine position sizes based on your analysis and performance
 - Use stops based on your analysis
-- Define clear invalidation conditions for each trade
-- Portfolio: Max 80% total exposure across all positions"""
+- Define clear invalidation conditions for each trade"""
 
     def __init__(
         self,
@@ -252,14 +251,6 @@ Available Cash: ${account_state.get('cash', 0):,.2f}
 Total Equity: ${account_state.get('equity', 0):,.2f}
 Current Positions: {account_state.get('position_count', 0)}
 Total Exposure: ${account_state.get('total_exposure', 0):,.2f} ({account_state.get('exposure_pct', 0)*100:.1f}%)
-"""
-
-        # Risk parameters
-        prompt += f"""
---- RISK PARAMETERS ---
-Max Position Size: {risk_params.get('max_position_pct', 0.05)*100:.1f}%
-Max Total Exposure: 80%
-Max Concurrent Positions: {risk_params.get('max_concurrent_positions', 8)}
 """
 
         # Performance context (if available)

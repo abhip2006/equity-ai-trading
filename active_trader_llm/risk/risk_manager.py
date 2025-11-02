@@ -146,7 +146,7 @@ class RiskManager:
         checks.append(f"Risk/reward: {rr_ratio:.2f}")
         checks.append(f"Current positions: {current_positions}")
 
-        # NEW: Check for duplicate position
+        # Check for duplicate position
         is_valid, error = self.check_duplicate_position(trade_plan.symbol)
         if not is_valid:
             logger.warning(f"Trade rejected: {error}")
@@ -155,20 +155,7 @@ class RiskManager:
                 reason=error
             )
 
-        # NEW: Check portfolio concentration (if current_prices provided)
-        if current_prices:
-            is_valid, error = self.check_portfolio_concentration(
-                trade_plan.position_size_pct,  # Already in decimal format (0.05 = 5%)
-                current_prices,
-                portfolio_state.equity,
-                max_total_exposure=0.80
-            )
-            if not is_valid:
-                logger.warning(f"Trade rejected: {error}")
-                return RiskDecision(
-                    approved=False,
-                    reason=error
-                )
+        # Portfolio concentration checks REMOVED - agent learns optimal exposure levels
 
         # ONLY EMERGENCY SAFETY RAIL: Daily drawdown circuit breaker (optional)
         enforce_dd = self.risk_params.get('enforce_daily_drawdown', True)
