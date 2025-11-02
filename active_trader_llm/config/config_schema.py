@@ -51,6 +51,30 @@ class TradeValidationConfig(BaseModel):
         return v
 
 
+class PositionManagementConfig(BaseModel):
+    """
+    Position management configuration.
+
+    Tracks positions across decision cycles and manages exits.
+    """
+    enabled: bool = True
+    max_total_exposure_pct: float = Field(default=80.0, gt=0, le=100, description="Maximum total portfolio exposure")
+    allow_duplicate_symbols: bool = Field(default=False, description="Prevent multiple positions in same symbol")
+    auto_close_eod: bool = Field(default=True, description="Close all positions before market close")
+    eod_close_time: str = Field(default="15:55", description="Time to close positions (3:55 PM)")
+
+
+class ExecutionScheduleConfig(BaseModel):
+    """
+    Execution schedule configuration.
+
+    Defines when to run decision cycles.
+    """
+    times: List[str] = Field(default_factory=lambda: ["09:30", "12:00", "16:00"], description="Times to run decision cycles")
+    timezone: str = Field(default="America/New_York", description="Timezone for scheduling")
+    monitor_exits_interval_seconds: int = Field(default=60, gt=0, description="How often to check exits between cycles")
+
+
 class StrategyConfig(BaseModel):
     name: Literal["momentum_breakout", "mean_reversion", "pullback", "sector_rotation"]
     regime: str
@@ -108,14 +132,34 @@ class ScannerConfig(BaseModel):
     stage2: Stage2Config = Field(default_factory=Stage2Config)
 
 
+class ExecutionConfig(BaseModel):
+    """
+    Execution configuration for live trading.
+
+    Controls how orders are submitted to the broker.
+    """
+    broker: Literal["alpaca", "simulated"] = "simulated"
+    paper_trading: bool = True
+    order_type: Literal["market", "limit"] = "market"
+    time_in_force: Literal["day", "gtc", "ioc", "fok"] = "day"
+
+    # Alpaca-specific settings (credentials from environment variables)
+    alpaca_api_key_env: str = "ALPACA_API_KEY"
+    alpaca_secret_key_env: str = "ALPACA_SECRET_KEY"
+    alpaca_base_url: Optional[str] = None  # Auto-selected based on paper_trading if None
+
+
 class Config(BaseModel):
     """Main configuration for ActiveTrader-LLM"""
 
-    mode: Literal["backtest", "paper-live"] = "backtest"
+    mode: Literal["backtest", "paper-live", "live"] = "backtest"
     data_sources: DataSourcesConfig = Field(default_factory=DataSourcesConfig)
     scanner: ScannerConfig = Field(default_factory=ScannerConfig)
     risk_parameters: RiskParameters = Field(default_factory=RiskParameters)
     trade_validation: TradeValidationConfig = Field(default_factory=TradeValidationConfig)
+    position_management: PositionManagementConfig = Field(default_factory=PositionManagementConfig)
+    execution_schedule: ExecutionScheduleConfig = Field(default_factory=ExecutionScheduleConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     strategies: List[StrategyConfig] = Field(default_factory=list)
     strategy_switching: StrategySwitchingConfig = Field(default_factory=StrategySwitchingConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)

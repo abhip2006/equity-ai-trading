@@ -117,6 +117,25 @@ trade_validation:
   min_stop_distance_pct: 0.5         # Minimum stop distance from entry (prevents noise stops)
   max_stop_distance_pct: 15.0        # Maximum stop distance from entry (prevents excessive risk)
 
+# Position Management
+# Tracks positions across decision cycles and manages exits
+position_management:
+  enabled: true
+  max_total_exposure_pct: 80.0        # Maximum total portfolio exposure
+  allow_duplicate_symbols: false      # Prevent multiple positions in same symbol
+  auto_close_eod: true               # Close all positions before market close
+  eod_close_time: "15:55"            # Time to close positions (3:55 PM)
+
+# Execution Schedule
+# When to run decision cycles
+execution_schedule:
+  times:
+    - "09:30"  # Market open
+    - "12:00"  # Midday
+    - "16:00"  # Market close (for final checks)
+  timezone: "America/New_York"
+  monitor_exits_interval_seconds: 60  # How often to check exits between cycles
+
 # Trading strategies
 strategies:
   - name: momentum_breakout

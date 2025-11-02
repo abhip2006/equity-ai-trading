@@ -3,9 +3,12 @@ Risk Manager: Validates and adjusts trade plans under portfolio constraints.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from pydantic import BaseModel
 from collections import defaultdict
+
+if TYPE_CHECKING:
+    from active_trader_llm.execution.position_manager import PositionManager
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +43,7 @@ class RiskManager:
     sector concentration, min_risk_reward) have been removed.
     """
 
-    def __init__(self, risk_params: Dict):
+    def __init__(self, risk_params: Dict, position_manager: Optional['PositionManager'] = None):
         """
         Initialize risk manager.
 
@@ -48,15 +51,66 @@ class RiskManager:
             risk_params: Dict with optional safety parameters
                 - enforce_daily_drawdown: Enable emergency drawdown stop (default: True)
                 - emergency_drawdown_limit: Max daily loss % (default: 0.20)
+            position_manager: Optional PositionManager for checking open positions
         """
         self.risk_params = risk_params
+        self.position_manager = position_manager
         logger.info(f"RiskManager initialized with params: {risk_params}")
         logger.info("Position sizing limits DISABLED - agent decides based on performance")
+
+    def check_duplicate_position(self, symbol: str) -> Tuple[bool, Optional[str]]:
+        """
+        Check if we already have an open position in this symbol
+
+        Returns:
+            (is_valid, error_message)
+        """
+        if not self.position_manager:
+            return True, None  # No position manager, can't check
+
+        if self.position_manager.has_open_position(symbol):
+            return False, f"Already have open position in {symbol}"
+
+        return True, None
+
+    def check_portfolio_concentration(
+        self,
+        new_position_pct: float,
+        current_prices: Dict[str, float],
+        max_total_exposure: float = 0.80
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Check if adding this position would exceed portfolio concentration limits
+
+        Args:
+            new_position_pct: Size of new position as % of capital
+            current_prices: Current prices for calculating exposure
+            max_total_exposure: Maximum total exposure (default 80%)
+
+        Returns:
+            (is_valid, error_message)
+        """
+        if not self.position_manager:
+            return True, None
+
+        portfolio_state = self.position_manager.get_portfolio_state(current_prices)
+        current_exposure = portfolio_state.get('total_exposure_pct', 0.0)
+
+        new_total_exposure = current_exposure + new_position_pct
+
+        if new_total_exposure > max_total_exposure:
+            return False, (
+                f"Portfolio concentration {new_total_exposure:.1f}% would exceed "
+                f"maximum {max_total_exposure*100:.0f}%"
+            )
+
+        return True, None
 
     def evaluate(
         self,
         trade_plan: 'TradePlan',
-        portfolio_state: PortfolioState
+        portfolio_state: PortfolioState,
+        current_prices: Optional[Dict[str, float]] = None
     ) -> RiskDecision:
         """
         Evaluate trade plan with minimal interference.
@@ -67,6 +121,7 @@ class RiskManager:
         Args:
             trade_plan: Proposed trade plan from agent
             portfolio_state: Current portfolio state
+            current_prices: Optional current prices for calculating exposure
 
         Returns:
             RiskDecision with approval status (modifications removed)
@@ -88,6 +143,29 @@ class RiskManager:
         checks.append(f"Agent requested: {requested_size:.1%} position size")
         checks.append(f"Risk/reward: {rr_ratio:.2f}")
         checks.append(f"Current positions: {current_positions}")
+
+        # NEW: Check for duplicate position
+        is_valid, error = self.check_duplicate_position(trade_plan.symbol)
+        if not is_valid:
+            logger.warning(f"Trade rejected: {error}")
+            return RiskDecision(
+                approved=False,
+                reason=error
+            )
+
+        # NEW: Check portfolio concentration (if current_prices provided)
+        if current_prices:
+            is_valid, error = self.check_portfolio_concentration(
+                trade_plan.position_size_pct * 100,  # Convert to percentage
+                current_prices,
+                max_total_exposure=0.80
+            )
+            if not is_valid:
+                logger.warning(f"Trade rejected: {error}")
+                return RiskDecision(
+                    approved=False,
+                    reason=error
+                )
 
         # ONLY EMERGENCY SAFETY RAIL: Daily drawdown circuit breaker (optional)
         enforce_dd = self.risk_params.get('enforce_daily_drawdown', True)

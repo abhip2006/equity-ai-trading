@@ -16,7 +16,7 @@ Orchestrates the entire multi-agent trading pipeline:
 import logging
 import argparse
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, time
 import uuid
 
 from config.loader import load_config
@@ -33,6 +33,9 @@ from memory.memory_manager import MemoryManager, TradeMemory
 from learning.strategy_monitor import StrategyMonitor
 from utils.logging_json import JSONLogger
 from scanners.scanner_orchestrator import ScannerOrchestrator
+from execution.position_manager import PositionManager
+from execution.exit_monitor import ExitMonitor
+from execution.alpaca_broker import AlpacaBrokerExecutor
 import os
 
 logging.basicConfig(
@@ -102,8 +105,37 @@ class ActiveTraderLLM:
             self.config.strategy_switching.model_dump()
         )
 
+        # Initialize position management
+        self.position_manager = PositionManager(self.config.database_path.replace('trading.db', 'positions.db'))
+        self.exit_monitor = ExitMonitor(self.position_manager)
+
+        # Pass position_manager to risk_manager
+        self.risk_manager.position_manager = self.position_manager
+
         # Initialize logging
         self.json_logger = JSONLogger(self.config.log_path)
+
+        # Initialize broker executor (for paper-live and live modes)
+        self.broker_executor = None
+        if self.config.mode in ["paper-live", "live"]:
+            if self.config.execution.broker == "alpaca":
+                try:
+                    api_key = os.getenv(self.config.execution.alpaca_api_key_env)
+                    secret_key = os.getenv(self.config.execution.alpaca_secret_key_env)
+
+                    self.broker_executor = AlpacaBrokerExecutor(
+                        api_key=api_key,
+                        secret_key=secret_key,
+                        paper=self.config.execution.paper_trading,
+                        base_url=self.config.execution.alpaca_base_url
+                    )
+                    logger.info(f"Alpaca broker executor initialized (paper={self.config.execution.paper_trading})")
+                except Exception as e:
+                    logger.error(f"Failed to initialize Alpaca executor: {e}")
+                    logger.warning("Falling back to simulated execution")
+                    self.broker_executor = None
+            else:
+                logger.info("Using simulated execution (no broker)")
 
         # Initialize scanner (if enabled)
         self.scanner = None
@@ -142,6 +174,7 @@ class ActiveTraderLLM:
         Execute one complete decision cycle.
 
         Workflow:
+        0. Load positions and check exits
         1. Fetch latest data
         2. Compute features
         3. Run analysts
@@ -152,13 +185,13 @@ class ActiveTraderLLM:
         8. (Execution would happen here in paper-live mode)
         """
         logger.info("=" * 80)
-        logger.info(f"DECISION CYCLE: {datetime.now().isoformat()}")
+        logger.info(f"Decision Cycle Start: {datetime.now()}")
         logger.info("=" * 80)
 
         try:
-            # Step 0: Run scanner if enabled (determines universe)
+            # Step 0a: Run scanner if enabled (determines universe)
             if self.config.scanner.enabled and self.scanner:
-                logger.info("Step 0: Running two-stage market scanner...")
+                logger.info("Step 0a: Running two-stage market scanner...")
                 try:
                     self.scanned_universe = self.scanner.run_full_scan(
                         force_refresh_universe=False,
@@ -203,6 +236,36 @@ class ActiveTraderLLM:
 
             market_snapshot = self.feature_builder.build_market_snapshot(price_df, features_dict)
             logger.info(f"Market regime: {market_snapshot.regime_hint} (breadth: {market_snapshot.breadth_score:.2f})")
+
+            # Step 0b: Load positions and check exits (after we have current prices)
+            logger.info("\nStep 0b: Checking existing positions...")
+
+            # Get current prices for all symbols (including active universe)
+            symbol_data = {}
+            for symbol in active_universe:
+                if symbol in features_dict:
+                    # Get current price from features
+                    current_price = features_dict[symbol].price
+                    symbol_data[symbol] = {'price': current_price}
+
+            # Build current_prices dict
+            current_prices = {symbol: data['price'] for symbol, data in symbol_data.items()}
+
+            # Check for exits on existing positions
+            if self.exit_monitor:
+                closed_positions = self.exit_monitor.check_exits(current_prices)
+                if closed_positions:
+                    for pos in closed_positions:
+                        logger.info(
+                            f"Position CLOSED: {pos.symbol} {pos.direction} @ {pos.exit_price:.2f} "
+                            f"(reason: {pos.exit_reason}, P&L: ${pos.realized_pnl:.2f})"
+                        )
+
+            # Get current portfolio state
+            portfolio_state = self.position_manager.get_portfolio_state(current_prices)
+            logger.info(f"Portfolio: {len(portfolio_state.get('positions', []))} open positions, "
+                       f"Exposure: {portfolio_state.get('total_exposure_pct', 0):.1f}%, "
+                       f"Unrealized P&L: ${portfolio_state.get('total_unrealized_pnl', 0):.2f}")
 
             # Step 3: Run analysts
             logger.info("Step 3: Running analyst agents...")
@@ -317,7 +380,7 @@ class ActiveTraderLLM:
             approved_plans = []
 
             for plan in trade_plans:
-                decision = self.risk_manager.evaluate(plan, self.portfolio_state)
+                decision = self.risk_manager.evaluate(plan, current_prices)
 
                 # Log decision
                 trade_id = str(uuid.uuid4())
@@ -344,26 +407,130 @@ class ActiveTraderLLM:
 
             logger.info(f"\nApproved: {len(approved_plans)}/{len(trade_plans)} trade plans")
 
-            # Step 7: Execution (paper trading simulation)
+            # Step 7: Execution
             if self.config.mode == "backtest":
                 logger.info("Step 7: Simulated execution (backtest mode)...")
+                initial_capital = 100000.0  # Should match self.portfolio_state.cash
+
                 for trade_id, plan in approved_plans:
                     # Simulate execution with small slippage
-                    slippage = 0.02  # $0.02 slippage
-                    filled_price = plan.entry + slippage
+                    if plan.direction == "long":
+                        fill_price = plan.entry + 0.02  # Simulated slippage
+                    else:
+                        fill_price = plan.entry - 0.02
+
+                    # Calculate shares based on position size percentage
+                    shares = int((initial_capital * plan.position_size_pct) / fill_price)
 
                     self.json_logger.log_execution(
                         trade_id=trade_id,
                         timestamp=datetime.now().isoformat(),
                         symbol=plan.symbol,
                         direction=plan.direction,
-                        filled_price=filled_price,
-                        filled_qty=100,  # Fixed for simulation
-                        slippage=slippage,
+                        filled_price=fill_price,
+                        filled_qty=shares,
+                        slippage=0.02,
                         execution_method="backtest"
                     )
 
-                    logger.info(f"Simulated execution: {plan.symbol} @ {filled_price:.2f}")
+                    logger.info(f"Simulated execution: {plan.symbol} @ {fill_price:.2f}")
+
+                    # Record position in database
+                    opened_position = self.position_manager.open_position(
+                        plan=plan,
+                        fill_price=fill_price,
+                        fill_timestamp=datetime.now(),
+                        shares=shares
+                    )
+
+                    logger.info(
+                        f"Position OPENED: {opened_position.symbol} {opened_position.direction} "
+                        f"@ {opened_position.entry_price:.2f}, {opened_position.shares} shares, "
+                        f"Stop: {opened_position.stop_loss:.2f}, Target: {opened_position.take_profit:.2f}"
+                    )
+
+            elif self.config.mode in ["paper-live", "live"] and self.broker_executor:
+                logger.info(f"Step 7: Live execution via {self.config.execution.broker}...")
+
+                for trade_id, plan in approved_plans:
+                    try:
+                        # Submit order to broker
+                        result = self.broker_executor.submit_trade(
+                            plan=plan,
+                            order_type=self.config.execution.order_type,
+                            time_in_force=self.config.execution.time_in_force
+                        )
+
+                        # Log execution result
+                        if result.success:
+                            logger.info(f"Order submitted: {plan.symbol} - Order ID: {result.order_id}")
+
+                            # For market orders, filled price may be available immediately
+                            filled_price = result.filled_price if result.filled_price else plan.entry
+                            filled_qty = result.filled_qty if result.filled_qty else 0
+
+                            self.json_logger.log_execution(
+                                trade_id=trade_id,
+                                timestamp=result.timestamp,
+                                symbol=plan.symbol,
+                                direction=plan.direction,
+                                filled_price=filled_price,
+                                filled_qty=filled_qty,
+                                slippage=filled_price - plan.entry if result.filled_price else 0.0,
+                                execution_method=f"{self.config.execution.broker}_{'paper' if self.config.execution.paper_trading else 'live'}",
+                                broker_order_id=result.order_id,
+                                order_status=result.status
+                            )
+
+                            # Record position in database (if filled)
+                            if filled_qty > 0:
+                                opened_position = self.position_manager.open_position(
+                                    plan=plan,
+                                    fill_price=filled_price,
+                                    fill_timestamp=datetime.now(),
+                                    shares=int(filled_qty)
+                                )
+
+                                logger.info(
+                                    f"Position OPENED: {opened_position.symbol} {opened_position.direction} "
+                                    f"@ {opened_position.entry_price:.2f}, {opened_position.shares} shares, "
+                                    f"Stop: {opened_position.stop_loss:.2f}, Target: {opened_position.take_profit:.2f}"
+                                )
+
+                        else:
+                            logger.error(f"Order failed for {plan.symbol}: {result.error_message}")
+                            self.json_logger.log_error(
+                                timestamp=result.timestamp,
+                                component="execution",
+                                error_type="OrderSubmissionError",
+                                error_message=result.error_message,
+                                context={"symbol": plan.symbol, "trade_id": trade_id}
+                            )
+
+                    except Exception as e:
+                        logger.error(f"Error executing trade for {plan.symbol}: {e}", exc_info=True)
+                        self.json_logger.log_error(
+                            timestamp=datetime.now().isoformat(),
+                            component="execution",
+                            error_type=type(e).__name__,
+                            error_message=str(e),
+                            context={"symbol": plan.symbol, "trade_id": trade_id}
+                        )
+
+            else:
+                logger.warning("No execution performed (broker not configured or mode is not paper-live/live)")
+
+            # Step 8: Check for end-of-day position closing
+            if hasattr(self.config, 'auto_close_eod') and self.config.auto_close_eod:
+                # Check if we're near market close (e.g., 3:55 PM)
+                current_time = datetime.now().time()
+                eod_close_time = time(15, 55)  # 3:55 PM
+
+                if current_time >= eod_close_time:
+                    logger.info("\nClosing all positions for end-of-day")
+                    closed = self.exit_monitor.close_all_positions(current_prices, reason='eod_close')
+                    for pos in closed:
+                        logger.info(f"EOD CLOSE: {pos.symbol} @ {pos.exit_price:.2f}, P&L: ${pos.realized_pnl:.2f}")
 
             logger.info("Decision cycle completed successfully")
 
