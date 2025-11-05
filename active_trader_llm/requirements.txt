@@ -17,6 +17,8 @@ tradingview-indicators>=1.0.0
 # LLM APIs
 anthropic>=0.18.1
 openai>=1.10.0
+google-generativeai>=0.3.0  # For Gemini models (optional)
+requests>=2.31.0  # For HTTP-based providers (xAI, DeepSeek, OpenRouter)
 
 # Configuration
 pyyaml>=6.0

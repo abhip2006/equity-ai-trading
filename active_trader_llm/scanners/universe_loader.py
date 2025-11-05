@@ -138,7 +138,7 @@ class UniverseLoader:
             stocks = []
             for asset in assets:
                 # Skip if optionable filter is on and stock is not optionable
-                if optionable_only and not asset.options_trading:
+                if optionable_only and not (hasattr(asset, 'options_trading') and asset.options_trading):
                     continue
 
                 # Skip if not tradable or fractionable (low liquidity indicators)
@@ -236,6 +236,84 @@ class UniverseLoader:
             List of symbols in that sector
         """
         return [stock.symbol for stock in universe if stock.sector == sector]
+
+    def pre_filter_universe(
+        self,
+        universe: List[TradableStock],
+        min_price: Optional[float] = None,
+        min_avg_volume: Optional[int] = None,
+        min_market_cap: Optional[float] = None
+    ) -> List[TradableStock]:
+        """
+        Pre-filter universe based on metadata before fetching price data.
+
+        This significantly reduces API calls by eliminating stocks that don't
+        meet basic quality criteria before expensive data fetches.
+
+        Args:
+            universe: List of TradableStock objects to filter
+            min_price: Minimum price per share (e.g., 10.0 for $10+)
+            min_avg_volume: Minimum average daily volume in shares (e.g., 1_000_000)
+            min_market_cap: Minimum market capitalization in USD (e.g., 1_000_000_000 for $1B+)
+
+        Returns:
+            Filtered list of TradableStock objects
+        """
+        if not universe:
+            return []
+
+        filtered = []
+        removed_reasons = {
+            'no_price': 0,
+            'low_price': 0,
+            'no_volume': 0,
+            'low_volume': 0,
+            'no_market_cap': 0,
+            'low_market_cap': 0
+        }
+
+        for stock in universe:
+            # Price filter
+            if min_price is not None:
+                if stock.last_price is None:
+                    removed_reasons['no_price'] += 1
+                    continue
+                if stock.last_price < min_price:
+                    removed_reasons['low_price'] += 1
+                    continue
+
+            # Volume filter
+            if min_avg_volume is not None:
+                if stock.avg_volume_20d is None:
+                    removed_reasons['no_volume'] += 1
+                    continue
+                if stock.avg_volume_20d < min_avg_volume:
+                    removed_reasons['low_volume'] += 1
+                    continue
+
+            # Market cap filter
+            if min_market_cap is not None:
+                if stock.market_cap is None:
+                    removed_reasons['no_market_cap'] += 1
+                    continue
+                if stock.market_cap < min_market_cap:
+                    removed_reasons['low_market_cap'] += 1
+                    continue
+
+            filtered.append(stock)
+
+        # Log filtering results
+        removed_total = len(universe) - len(filtered)
+        if removed_total > 0:
+            logger.info(f"Pre-filter: {len(universe)} → {len(filtered)} stocks ({removed_total} removed)")
+            logger.info(f"  Removal reasons:")
+            for reason, count in removed_reasons.items():
+                if count > 0:
+                    logger.info(f"    {reason}: {count}")
+        else:
+            logger.info(f"Pre-filter: No stocks removed (all {len(universe)} passed)")
+
+        return filtered
 
     def refresh_universe_metadata(self, symbols: List[str], batch_size: int = 50) -> Dict[str, Dict]:
         """

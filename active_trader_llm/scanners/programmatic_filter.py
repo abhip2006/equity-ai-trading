@@ -60,6 +60,8 @@ class ProgrammaticFilter:
             'passed_52w_high': 0,
             'passed_momentum': 0,
             'passed_sector': 0,
+            'passed_liquidity': 0,
+            'passed_adr': 0,
             'passed_all': 0
         }
 
@@ -91,6 +93,16 @@ class ProgrammaticFilter:
                 continue
             filter_stats['passed_sector'] += 1
 
+            # Filter 5: Daily liquidity (> $500M)
+            if stock.daily_liquidity is None or stock.daily_liquidity < 500_000_000:
+                continue
+            filter_stats['passed_liquidity'] += 1
+
+            # Filter 6: ADR range (1% to 15%)
+            if stock.adr_percent is None or stock.adr_percent < 1.0 or stock.adr_percent > 15.0:
+                continue
+            filter_stats['passed_adr'] += 1
+
             # Passed all filters
             filter_stats['passed_all'] += 1
             candidates.append(stock.symbol)
@@ -118,6 +130,8 @@ class ProgrammaticFilter:
                    f"52w_high={filter_stats['passed_52w_high']}, "
                    f"momentum={filter_stats['passed_momentum']}, "
                    f"sector={filter_stats['passed_sector']}, "
+                   f"liquidity={filter_stats['passed_liquidity']}, "
+                   f"adr={filter_stats['passed_adr']}, "
                    f"all={filter_stats['passed_all']}")
 
         return FilterResult(

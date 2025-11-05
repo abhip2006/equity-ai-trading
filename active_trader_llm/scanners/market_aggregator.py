@@ -28,6 +28,8 @@ class StockMetrics(BaseModel):
     distance_from_52w_high_pct: Optional[float] = None
     current_price: Optional[float] = None
     avg_volume_20d: Optional[float] = None
+    daily_liquidity: Optional[float] = None  # price × avg_volume in USD
+    adr_percent: Optional[float] = None  # Average Daily Range as % of close (20-day)
 
 
 class SectorStats(BaseModel):
@@ -143,6 +145,18 @@ class MarketAggregator:
             high_52w = df['high'].iloc[-252:].max() if len(df) >= 252 else df['high'].max()
             distance_from_52w_high_pct = ((current_price - high_52w) / high_52w) * 100
 
+            # Daily liquidity (price × avg_volume in USD)
+            daily_liquidity = None
+            if avg_volume_20d is not None and current_price is not None:
+                daily_liquidity = current_price * avg_volume_20d
+
+            # Average Daily Range (ADR) as % of close (20-day average)
+            adr_percent = None
+            if len(df) >= 20 and 'high' in df.columns and 'low' in df.columns:
+                # Calculate daily range for last 20 days
+                daily_ranges = ((df['high'].iloc[-20:] - df['low'].iloc[-20:]) / df['close'].iloc[-20:]) * 100
+                adr_percent = daily_ranges.mean()
+
             return StockMetrics(
                 symbol=symbol,
                 sector=sector,
@@ -152,7 +166,9 @@ class MarketAggregator:
                 position_vs_ma200=position_vs_ma200,
                 distance_from_52w_high_pct=distance_from_52w_high_pct,
                 current_price=current_price,
-                avg_volume_20d=avg_volume_20d
+                avg_volume_20d=avg_volume_20d,
+                daily_liquidity=daily_liquidity,
+                adr_percent=adr_percent
             )
 
         except Exception as e:

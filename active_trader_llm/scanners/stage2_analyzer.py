@@ -14,7 +14,7 @@ import json
 import logging
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
-from openai import OpenAI
+from active_trader_llm.llm import get_llm_client, LLMMessage
 
 from .raw_data_scanner import TechnicalIndicators, RawDataScanner
 from .stage1_analyzer import Stage1Guidance
@@ -74,17 +74,29 @@ CRITICAL RULES:
 4. Consider Stage 1 guidance (market bias, focus patterns)
 5. Look for confluence of multiple indicators"""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-3.5-turbo", temperature: float = 0.3):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "gpt-3.5-turbo",
+        provider: str = "openai",
+        temperature: float = 0.3
+    ):
         """
         Initialize Stage 2 Analyzer.
 
         Args:
-            api_key: OpenAI API key
-            model: OpenAI model to use (gpt-4o, gpt-4-turbo, gpt-3.5-turbo)
+            api_key: API key for the LLM provider
+            model: LLM model to use (gpt-4o, gpt-4-turbo, gpt-3.5-turbo, claude-3-5-sonnet-20241022)
+            provider: LLM provider (openai, anthropic, local)
             temperature: Temperature for LLM (0.3 for consistency)
         """
-        self.client = OpenAI(api_key=api_key)
+        self.client = get_llm_client(
+            provider=provider,
+            model=model,
+            api_key=api_key
+        )
         self.model = model
+        self.provider = provider
         self.temperature = temperature
         self.scanner = RawDataScanner()
 
@@ -158,18 +170,20 @@ Return your analysis as JSON:"""
         try:
             logger.info(f"Calling LLM for Stage 2 batch analysis ({len(batch_indicators)} stocks)...")
 
-            response = self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=3000,
+            # Use unified LLM client
+            messages = [
+                LLMMessage(role="system", content=self.SYSTEM_PROMPT),
+                LLMMessage(role="user", content=prompt)
+            ]
+
+            response = self.client.generate(
+                messages=messages,
                 temperature=self.temperature,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ]
+                max_tokens=3000
             )
 
             # Extract JSON from response
-            content = response.choices[0].message.content
+            content = response.content
 
             # Try to parse JSON
             try:
@@ -259,7 +273,11 @@ if __name__ == "__main__":
 
    
 
-    analyzer = Stage2Analyzer(api_key=os.getenv('OPENAI_API_KEY'))
+    analyzer = Stage2Analyzer(
+        api_key=os.getenv('OPENAI_API_KEY'),
+        provider="openai",
+        model="gpt-3.5-turbo"
+    )
 
     # Analyze batch
     result = analyzer.analyze_batch(

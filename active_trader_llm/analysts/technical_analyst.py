@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Dict, Literal, Optional
 from pydantic import BaseModel, Field
-from openai import OpenAI
+from active_trader_llm.llm import get_llm_client, LLMMessage
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +49,27 @@ Analyze the pre-calculated indicators and determine your trading signal. Be conc
 
 Avoid overfitting to single indicators. Look for confluence."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-3.5-turbo"):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "gpt-3.5-turbo",
+        provider: str = "openai"
+    ):
         """
         Initialize Technical Analyst.
 
         Args:
-            api_key: OpenAI API key (or use environment variable)
-            model: OpenAI model to use (gpt-4o, gpt-4-turbo, gpt-3.5-turbo)
+            api_key: API key for the LLM provider
+            model: LLM model to use (gpt-4o, gpt-4-turbo, gpt-3.5-turbo, claude-3-5-sonnet-20241022)
+            provider: LLM provider (openai, anthropic, local)
         """
-        self.client = OpenAI(api_key=api_key)
+        self.client = get_llm_client(
+            provider=provider,
+            model=model,
+            api_key=api_key
+        )
         self.model = model
+        self.provider = provider
 
     def _build_analysis_prompt(
         self,
@@ -186,18 +197,20 @@ MARKET CONTEXT (Raw Data):
         prompt = self._build_analysis_prompt(symbol, features, market_snapshot, memory_context)
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=500,
+            # Use unified LLM client
+            messages = [
+                LLMMessage(role="system", content=self.SYSTEM_PROMPT),
+                LLMMessage(role="user", content=prompt)
+            ]
+
+            response = self.client.generate(
+                messages=messages,
                 temperature=0.3,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ]
+                max_tokens=500
             )
 
             # Extract JSON from response
-            content = response.choices[0].message.content.strip()
+            content = response.content
 
             # Handle potential markdown code blocks
             if content.startswith("```"):
@@ -292,7 +305,11 @@ if __name__ == "__main__":
         'advance_decline_ratio': 0.8
     }
 
-    analyst = TechnicalAnalyst(api_key=os.getenv("OPENAI_API_KEY"))
+    analyst = TechnicalAnalyst(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        provider="openai",
+        model="gpt-3.5-turbo"
+    )
     signal = analyst.analyze("AAPL", sample_features, sample_market)
 
     print(f"\nSignal: {signal.signal}")

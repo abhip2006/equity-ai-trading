@@ -155,9 +155,33 @@ class RiskManager:
                 reason=error
             )
 
-        # Portfolio concentration checks REMOVED - agent learns optimal exposure levels
+        # Check 1: Cash availability
+        position_value = trade_plan.position_size_pct * portfolio_state.equity
+        if position_value > portfolio_state.cash:
+            return RiskDecision(
+                approved=False,
+                reason=f"Insufficient cash: need ${position_value:,.2f}, have ${portfolio_state.cash:,.2f}"
+            )
+        checks.append(f"Cash available: ${portfolio_state.cash:,.2f}")
 
-        # ONLY EMERGENCY SAFETY RAIL: Daily drawdown circuit breaker (optional)
+        # Check 2: Portfolio concentration limits (re-enabled to prevent over-deployment)
+        if current_prices:
+            max_total_exposure = self.risk_params.get('max_total_exposure_pct', 0.80)  # Default 80%
+            is_valid, error = self.check_portfolio_concentration(
+                new_position_pct=trade_plan.position_size_pct,
+                current_prices=current_prices,
+                portfolio_equity=portfolio_state.equity,
+                max_total_exposure=max_total_exposure
+            )
+            if not is_valid:
+                logger.warning(f"Trade rejected: {error}")
+                return RiskDecision(
+                    approved=False,
+                    reason=error
+                )
+            checks.append(f"Portfolio concentration within limits (<{max_total_exposure*100:.0f}%)")
+
+        # Check 3: Emergency safety rail - Daily drawdown circuit breaker (optional)
         enforce_dd = self.risk_params.get('enforce_daily_drawdown', True)
 
         if enforce_dd:

@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
-from openai import OpenAI
+from active_trader_llm.llm import get_llm_client, LLMMessage
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +72,27 @@ Both researchers should:
 - Be intellectually honest about risks/opportunities
 - Provide 3-5 specific points each"""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-3.5-turbo"):
-        """Initialize researcher debate"""
-        self.client = OpenAI(api_key=api_key)
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "gpt-3.5-turbo",
+        provider: str = "openai"
+    ):
+        """
+        Initialize researcher debate
+
+        Args:
+            api_key: API key for the LLM provider
+            model: LLM model to use
+            provider: LLM provider (openai, anthropic, local)
+        """
+        self.client = get_llm_client(
+            provider=provider,
+            model=model,
+            api_key=api_key
+        )
         self.model = model
+        self.provider = provider
 
     def _build_debate_prompt(
         self,
@@ -158,17 +175,19 @@ Macro:
         prompt = self._build_debate_prompt(symbol, analyst_outputs, market_snapshot, memory_summary)
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=800,
+            # Use unified LLM client
+            messages = [
+                LLMMessage(role="system", content=self.SYSTEM_PROMPT),
+                LLMMessage(role="user", content=prompt)
+            ]
+
+            response = self.client.generate(
+                messages=messages,
                 temperature=0.4,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ]
+                max_tokens=800
             )
 
-            content = response.choices[0].message.content.strip()
+            content = response.content
 
             # Handle markdown code blocks
             if content.startswith("```"):
@@ -255,7 +274,11 @@ if __name__ == "__main__":
         'breadth_score': 0.45
     }
 
-    debate = ResearcherDebate(api_key=os.getenv("OPENAI_API_KEY"))
+    debate = ResearcherDebate(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        provider="openai",
+        model="gpt-3.5-turbo"
+    )
     bull, bear = debate.debate("AAPL", sample_analyst_outputs, sample_market)
 
     print(f"\nBull Thesis ({bull.confidence:.2f}):")

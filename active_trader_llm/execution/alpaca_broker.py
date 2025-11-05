@@ -139,8 +139,11 @@ class AlpacaBrokerExecutor:
             Number of shares to buy/sell
         """
         if account_equity is None:
+            logger.debug(f"{plan.symbol}: Fetching account info (no cache provided)")
             account = self.client.get_account()
             account_equity = float(account.equity)
+        else:
+            logger.debug(f"{plan.symbol}: Using cached account equity: ${account_equity:,.2f}")
 
         # Calculate dollar amount to allocate
         dollar_amount = account_equity * plan.position_size_pct
@@ -160,7 +163,8 @@ class AlpacaBrokerExecutor:
         self,
         plan: TradePlan,
         order_type: str = "market",
-        time_in_force: str = "day"
+        time_in_force: str = "day",
+        cached_account_equity: Optional[float] = None
     ) -> OrderResult:
         """
         Submit a trade based on trade plan.
@@ -169,6 +173,7 @@ class AlpacaBrokerExecutor:
             plan: Trade plan from trader agent
             order_type: "market" or "limit" (default: market)
             time_in_force: "day", "gtc", "ioc", "fok" (default: day)
+            cached_account_equity: Cached account equity to avoid API call (optional)
 
         Returns:
             OrderResult with execution details
@@ -176,8 +181,8 @@ class AlpacaBrokerExecutor:
         timestamp = datetime.now().isoformat()
 
         try:
-            # Calculate position size
-            qty = self.calculate_position_size(plan)
+            # Calculate position size (use cached equity if provided)
+            qty = self.calculate_position_size(plan, account_equity=cached_account_equity)
 
             # Determine order side
             side = OrderSide.BUY if plan.direction == "long" else OrderSide.SELL
@@ -195,7 +200,7 @@ class AlpacaBrokerExecutor:
             logger.info(f"\n{'='*60}")
             logger.info(f"Submitting {self.mode} order for {plan.symbol}")
             logger.info(f"Direction: {plan.direction.upper()}")
-            logger.info(f"Strategy: {plan.strategy}")
+            logger.info(f"Action: {plan.action}")
             logger.info(f"Quantity: {qty} shares")
             logger.info(f"Entry: ${plan.entry:.2f}")
             logger.info(f"Stop Loss: ${plan.stop_loss:.2f}")
@@ -415,14 +420,22 @@ class AlpacaBrokerExecutor:
             logger.error(f"Error cancelling order: {e}")
             return False
 
-    def get_account_info(self) -> Dict[str, Any]:
+    def get_account_info(self, use_cache: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Get account information.
+
+        Args:
+            use_cache: Optional cached account dict to return instead of fetching
 
         Returns:
             Dict with account details
         """
+        if use_cache is not None:
+            logger.debug("Using cached account info (cache hit)")
+            return use_cache
+
         try:
+            logger.debug("Fetching account info from API (cache miss)")
             account = self.client.get_account()
 
             return {
@@ -444,6 +457,21 @@ class AlpacaBrokerExecutor:
         except Exception as e:
             logger.error(f"Error getting account info: {e}")
             return {}
+
+    def get_account_info_cached(self, cached_account: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Return formatted account info from cached account dict without API call.
+
+        Useful when SharedDataFeed or coordinator has already fetched account info.
+
+        Args:
+            cached_account: Already fetched account dict
+
+        Returns:
+            Formatted account info dict (passthrough of cached data)
+        """
+        logger.debug("Returning cached account info (no API call)")
+        return cached_account
 
 
 # Example usage

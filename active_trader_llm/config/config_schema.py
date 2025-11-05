@@ -37,11 +37,11 @@ class TradeValidationConfig(BaseModel):
     Checks: price logic, position sizing, risk-reward ratios, price sanity, stop distances.
     """
     enabled: bool = True
-    max_position_pct: float = Field(default=10.0, gt=0, le=100, description="Maximum position size as % of capital")
-    min_risk_reward_ratio: float = Field(default=1.5, gt=0, description="Minimum reward/risk ratio")
-    max_price_deviation_pct: float = Field(default=5.0, gt=0, description="Max deviation from current price (%)")
-    min_stop_distance_pct: float = Field(default=0.5, gt=0, description="Minimum stop distance from entry (%)")
-    max_stop_distance_pct: float = Field(default=15.0, gt=0, description="Maximum stop distance from entry (%)")
+    max_position_pct: float = Field(default=100.0, gt=0, le=100, description="Maximum position size as % of capital")
+    min_risk_reward_ratio: float = Field(default=0.0, ge=0, description="Minimum reward/risk ratio")
+    max_price_deviation_pct: float = Field(default=50.0, gt=0, description="Max deviation from current price (%)")
+    min_stop_distance_pct: float = Field(default=0.1, gt=0, description="Minimum stop distance from entry (%)")
+    max_stop_distance_pct: float = Field(default=50.0, gt=0, description="Maximum stop distance from entry (%)")
 
     @validator('max_stop_distance_pct')
     def validate_stop_distances(cls, v, values):
@@ -125,7 +125,8 @@ class Stage2Config(BaseModel):
 class ScannerConfig(BaseModel):
     """Two-stage market scanner configuration"""
     enabled: bool = False
-    universe_source: Literal["alpaca_optionable", "tradable_universe_cache", "custom"] = "alpaca_optionable"
+    universe_source: Literal["file", "alpaca_optionable", "tradable_universe_cache", "custom"] = "file"
+    universe_file_path: Optional[str] = "data/stock_universe.txt"
     alpaca_api_url: Optional[str] = None
     refresh_universe_hours: int = 24
     stage1: Stage1Config = Field(default_factory=Stage1Config)

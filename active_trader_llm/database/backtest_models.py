@@ -251,6 +251,18 @@ class BacktestDatabase:
         if not kwargs:
             return
 
+        # Whitelist of allowed column names to prevent SQL injection
+        allowed_columns = {
+            'run_name', 'start_date', 'end_date', 'initial_capital',
+            'final_capital', 'total_return_pct', 'config_snapshot',
+            'completed_at', 'status', 'error_message'
+        }
+
+        # Validate all column names against whitelist
+        for column_name in kwargs.keys():
+            if column_name not in allowed_columns:
+                raise ValueError(f"Invalid column name: {column_name}")
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 

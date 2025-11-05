@@ -80,10 +80,22 @@ market_breadth:
 
 # Two-stage market scanner
 scanner:
-  enabled: false  # Set to true to use scanner mode instead of fixed universe
-  universe_source: alpaca_optionable  # alpaca_optionable | tradable_universe_cache | custom
+  enabled: false  # Set to false to use pre-filtered universe file
+  universe_source: file  # file | alpaca_optionable | tradable_universe_cache | custom
+  universe_file_path: data/stock_universe.txt  # Path to pre-filtered universe file (one symbol per line)
   alpaca_api_url: ${ALPACA_BASE_URL}  # Use environment variable
   refresh_universe_hours: 24  # How often to refresh universe cache
+
+  # Pre-filter settings (filters BEFORE fetching price data to reduce API calls by 80-90%)
+  pre_filter:
+    enabled: true                      # Enable pre-filtering to reduce API calls
+    min_price: 10.0                    # Minimum price per share ($10+)
+    min_avg_volume: 1_000_000          # Minimum average daily volume (1M shares)
+    min_market_cap: 1_000_000_000      # Minimum market capitalization ($1B)
+    min_daily_liquidity: 500_000_000   # Minimum daily liquidity in USD ($500M) - applied in Stage 2A
+    min_adr_percent: 1.0               # Minimum Average Daily Range (1%)
+    max_adr_percent: 15.0              # Maximum Average Daily Range (15%)
+
   stage1:
     enabled: true
     target_candidate_count: 50  # Target number of candidates for Stage 2 (reduced for live trading)
@@ -93,9 +105,45 @@ scanner:
     max_batches: 3  # Max batches to process (reduced for live trading cost control)
     max_candidates: 50  # Max candidates to analyze in Stage 2 (reduced for live trading)
 
+# Batch Processing & API Call Reduction
+# Applies programmatic filters BEFORE LLM analysis to dramatically reduce API costs
+# Combines filtered candidates into batches for single API calls
+batch_processing:
+  enabled: false                     # Disabled - 1 API call per candidate stock (higher quality analysis)
+  batch_size: 10                     # Number of stocks to analyze per API call (10 recommended)
+
+  # Programmatic filters (applied BEFORE LLM analysis)
+  # These filters identify high-quality setups without using LLM
+  # Typically reduces 359 stocks → 20-50 candidates (85-95% API call reduction)
+  filters:
+    min_volume_ratio: 2.0            # Minimum volume ratio (current / 20-day average)
+                                      # 2.0 = 2x average volume (indicates unusual activity)
+
+    min_momentum_5d: 2.0             # Minimum 5-day price change (%)
+                                      # 2.0 = stock must be up 2%+ over last 5 days
+
+    max_distance_from_high: 10.0     # Maximum distance from 52-week high (%)
+                                      # 10.0 = stock must be within 10% of 52-week high
+
+    min_liquidity: 500_000_000       # Minimum daily liquidity in USD ($500M)
+                                      # Ensures sufficient liquidity for position sizing
+
+    min_adr: 1.0                     # Minimum Average Daily Range (%)
+                                      # 1.0 = stock must move at least 1% per day on average
+
+    max_adr: 15.0                    # Maximum Average Daily Range (%)
+                                      # 15.0 = filters out overly volatile stocks
+
+  # API call tracking and reporting
+  log_savings: true                  # Log API call reduction statistics
+  log_filter_details: false          # Log detailed filter pass/fail for each stock (verbose)
+
 # Risk parameters
-# IMPORTANT: Position sizing limits removed - agent decides based on performance
+# IMPORTANT: Cash balance and portfolio concentration now enforced
 risk_parameters:
+  # Capital management
+  max_total_exposure_pct: 0.80       # Maximum 80% of capital deployed (prevents over-leverage)
+
   # Emergency safety rail (optional)
   enforce_daily_drawdown: true       # Enable emergency circuit breaker
   emergency_drawdown_limit: 0.20     # 20% daily loss triggers halt
@@ -108,11 +156,11 @@ risk_parameters:
 # Validates LLM-generated trade plans to prevent impossible or dangerous parameters
 trade_validation:
   enabled: true                      # Enable trade plan validation
-  max_position_pct: 10.0             # Maximum position size as % of capital
-  min_risk_reward_ratio: 1.5         # Minimum R:R ratio (reward/risk)
-  max_price_deviation_pct: 5.0       # Max deviation from current price (prevents stale prices)
-  min_stop_distance_pct: 0.5         # Minimum stop distance from entry (prevents noise stops)
-  max_stop_distance_pct: 15.0        # Maximum stop distance from entry (prevents excessive risk)
+  max_position_pct: 100.0            # Maximum position size as % of capital (LLM decides based on conditions)
+  min_risk_reward_ratio: 0.0         # Minimum R:R ratio (LLM decides based on market conditions)
+  max_price_deviation_pct: 50.0      # Max deviation from current price (very permissive for limit orders)
+  min_stop_distance_pct: 0.1         # Minimum stop distance from entry (only prevent same-price stops)
+  max_stop_distance_pct: 50.0        # Maximum stop distance from entry (LLM decides based on volatility)
 
 # Position Management
 # Tracks positions across decision cycles and manages exits
@@ -199,7 +247,7 @@ execution:
   order_type: market                   # market | limit
   time_in_force: day                   # day | gtc | ioc
   commission_per_trade: 1.0            # Fixed commission per trade (USD)
-  slippage_bps: 5.0                    # Slippage in basis points (5 bps = 0.05%)
+  slippage_bps: 2.0                    # Slippage in basis points (2 bps = 0.02%) - reduced from 5.0
   alpaca_api_key_env: ALPACA_API_KEY   # Environment variable for API key
   alpaca_secret_key_env: ALPACA_SECRET_KEY  # Environment variable for secret key
   alpaca_base_url: https://paper-api.alpaca.markets  # Alpaca API URL

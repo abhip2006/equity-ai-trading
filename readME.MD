@@ -1,12 +1,47 @@
 # Equity AI Trading Platform
 
-AI-powered equity and options trading system built on Alpaca Paper Trading API.
+AI-powered equity trading system with **LLM Trading Battle Royale** - where 6 different AI models compete head-to-head in live paper trading.
 
 ## Overview
 
-This platform implements an autonomous trading system for equity markets with a focus on options trading strategies. The system leverages the Alpaca trading API for market data, order execution, and portfolio management, with a modern tech stack built on FastAPI and Next.js.
+This platform implements an autonomous trading system featuring:
+- **Multi-Model Competition**: 6 AI models (GPT-4, Claude, Grok, DeepSeek, Gemini, Qwen) compete simultaneously
+- **Real-Time Battle Dashboard**: Live leaderboard, equity curves, and decision transparency
+- **Comprehensive Metrics**: Sharpe ratio, max drawdown, win rate, profit factor tracking
+- **Paper Trading**: Safe testing environment via Alpaca Paper Trading API
+- **Production-Ready**: Security-hardened, fully tested, documented
 
-**Note**: This is a redesign of the ai-trading-platform with a completely reimagined agent architecture. The Alpaca integration and core infrastructure are preserved while the agent decision-making logic will be built from scratch.
+---
+
+## 🚀 Quick Start
+
+```bash
+# Single model test (recommended first run)
+./test_single.sh
+
+# Full 6-model battle
+./run_battle_full.sh
+```
+
+See **[docs/getting-started/battle-setup.md](docs/getting-started/battle-setup.md)** for complete setup instructions.
+
+---
+
+## 📚 Documentation
+
+Comprehensive documentation is organized in the **[docs/](docs/)** directory:
+
+| Category | Description | Link |
+|----------|-------------|------|
+| **Getting Started** | Setup and first run | [docs/getting-started/](docs/getting-started/) |
+| **Guides** | Deployment, operations, security | [docs/guides/](docs/guides/) |
+| **API** | Complete API reference | [docs/api/](docs/api/) |
+| **Battle System** | Multi-model competition | [docs/battle-system/](docs/battle-system/) |
+| **Architecture** | System design | [docs/architecture/](docs/architecture/) |
+| **LLM Integration** | Multi-provider setup | [docs/llm/](docs/llm/) |
+| **Alerting** | Monitoring system | [docs/alerting/](docs/alerting/) |
+
+**[📖 Documentation Hub →](docs/README.md)**
 
 ---
 
@@ -493,9 +528,126 @@ Signal Generation → Validation
 
 ---
 
-## Getting Started
+## Documentation
 
-Documentation for setup and deployment coming soon...
+Complete documentation is available in the following guides:
+
+### Quick Start
+- **[DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md)** - Setup and deployment instructions
+  - Local development setup (5 minutes)
+  - Production deployment with Nginx and SSL
+  - Docker Compose configuration
+  - Environment variables and configuration
+
+- **[FAQ.md](./FAQ.md)** - Frequently asked questions
+  - General questions about the platform
+  - Deployment and setup help
+  - Trading configuration
+  - Troubleshooting common issues
+
+### Operations & Development
+- **[OPERATIONS_GUIDE.md](./OPERATIONS_GUIDE.md)** - Day-to-day operations
+  - Morning checklist before trading
+  - Starting and stopping services
+  - Monitoring and health checks
+  - Log analysis and debugging
+  - Performance tuning
+
+- **[API_DOCUMENTATION.md](./API_DOCUMENTATION.md)** - REST API and WebSocket reference
+  - All endpoints with examples
+  - Authentication and rate limiting
+  - WebSocket event types
+  - Error handling
+
+### Reference
+- **[CONFIGURATION_SUMMARY.md](./CONFIGURATION_SUMMARY.md)** - All configuration options
+- **[TRADING_AGENT_ARCHITECTURE.md](./TRADING_AGENT_ARCHITECTURE.md)** - How trading decisions work
+- **[CHANGELOG.md](./CHANGELOG.md)** - Version history and features
+
+---
+
+## Getting Started (Quick)
+
+```bash
+# 1. Clone repository
+git clone https://github.com/yourusername/equity-ai-trading.git
+cd equity-ai-trading
+
+# 2. Setup environment
+cp .env.example .env
+# Edit .env with your Alpaca API keys
+
+# 3. Start with Docker
+docker-compose up -d
+
+# 4. Run first decision cycle
+python active_trader_llm/main.py --config config.yaml --cycles 1
+```
+
+See **[DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md)** for detailed setup instructions.
+
+---
+
+## Features
+
+✅ **Autonomous Trading**
+- LLM-powered decision making (Claude, GPT)
+- Real-time market data analysis
+- Automated position management
+
+✅ **Risk Management**
+- Per-trade stop-loss and take-profit
+- Daily loss circuit breaker
+- Portfolio exposure limits
+- Position sizing validation
+
+✅ **Multi-Broker Support**
+- Alpaca (paper and live)
+- Simulated broker (backtesting)
+
+✅ **Production Ready**
+- Docker deployment
+- Comprehensive logging
+- Health monitoring
+- Error handling and recovery
+
+✅ **Fully Configurable**
+- Trading universe customization
+- Risk parameters
+- Decision frequency
+- LLM model selection
+
+---
+
+## System Architecture
+
+```
+Market Data Sources (Yahoo Finance, Alpaca)
+            ↓
+    Data Ingestion & Caching
+            ↓
+  Technical Feature Engineering
+            ↓
+    LLM Decision Agent (Claude/GPT)
+            ↓
+    Risk Manager Validation
+            ↓
+   Alpaca Broker Execution
+            ↓
+Position & Trade Tracking
+```
+
+---
+
+## Key Metrics
+
+- **Decision Cycle Time**: 5-30 seconds
+- **API Calls**: 1-5 per cycle (with batching)
+- **Monthly Cost**: $50-200 (LLM + infrastructure)
+- **Uptime**: 99.9% (Docker containers)
+- **Support**: Paper and live trading
+
+---
 
 ## License
 

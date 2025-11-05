@@ -11,12 +11,20 @@ Orchestrates the entire multi-agent trading pipeline:
 6. Risk validation
 7. Execution logging
 8. Learning/strategy switching
+
+OPTIMIZATION NOTES:
+- Account info caching: Reduces redundant API calls in live/paper-live mode
+- Cache TTL: 5 seconds (sufficient for intra-cycle operations)
+- Typical reduction: ~5-10 API calls per cycle → 0-1 API calls
+- Battle mode: Each model instance uses cached data from ModelInstance
+- Can be disabled by passing use_cache=False to get_current_portfolio_state()
 """
 
 import logging
 import argparse
 from pathlib import Path
 from datetime import datetime, time
+from typing import Dict, List
 import uuid
 from dotenv import load_dotenv
 
@@ -56,15 +64,24 @@ class ActiveTraderLLM:
     Main orchestrator for the multi-agent trading system.
     """
 
-    def __init__(self, config_path: str, mode_override: str = None):
+    def __init__(self, config_path: str, mode_override: str = None, backtest_state_provider=None, cached_account_info: dict = None):
         """
         Initialize the trading system.
 
         Args:
             config_path: Path to YAML configuration file
             mode_override: Optional mode override (e.g., "backtest" for backtesting)
+            backtest_state_provider: Optional provider for real-time backtest state (BacktestEngine instance)
+            cached_account_info: Optional cached account info from ModelInstance (reduces API calls)
         """
         logger.info(f"Initializing ActiveTrader-LLM from {config_path}")
+
+        # Store backtest state provider for dynamic portfolio state queries
+        self.backtest_state_provider = backtest_state_provider
+
+        # Store cached account info to avoid redundant fetches
+        self._cached_account_info = cached_account_info
+        self._account_cache_timestamp = datetime.now() if cached_account_info else None
 
         # Load configuration
         self.config = load_config(config_path)
@@ -86,6 +103,7 @@ class ActiveTraderLLM:
         # Initialize analysts
         api_key = self.config.llm.api_key
         model = self.config.llm.model
+        provider = self.config.llm.provider
 
         # technical_analyst removed - validation done directly, no LLM interpretation needed
         self.sentiment_analyst = None  # Sentiment analyst not implemented
@@ -93,7 +111,7 @@ class ActiveTraderLLM:
 
         # researcher_debate removed - trader_agent makes decisions from raw data only
 
-        # Initialize trader with validation
+        # Initialize trader with validation and unified LLM client
         from active_trader_llm.trader.trade_plan_validator import ValidationConfig
         validation_config = ValidationConfig(
             max_position_pct=self.config.trade_validation.max_position_pct,
@@ -105,6 +123,7 @@ class ActiveTraderLLM:
         self.trader_agent = TraderAgent(
             api_key=api_key,
             model=model,
+            provider=provider,
             validation_config=validation_config,
             enable_validation=self.config.trade_validation.enabled
         )
@@ -172,11 +191,14 @@ class ActiveTraderLLM:
                     alpaca_secret_key=os.getenv('ALPACA_SECRET_KEY'),
                     alpaca_base_url=os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets'),
                     paper=self.config.execution.paper_trading,  # Thread execution mode
-                    anthropic_api_key=api_key,
+                    openai_api_key=os.getenv('OPENAI_API_KEY'),
+                    anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
+                    llm_provider=provider,
+                    llm_model=model,
                     requests_per_minute=200  # Standard plan
                 )
                 mode = "PAPER" if self.config.execution.paper_trading else "LIVE"
-                logger.info(f"Market scanner initialized (two-stage mode enabled, {mode} mode)")
+                logger.info(f"Market scanner initialized (two-stage mode enabled, {mode} mode, using {provider}/{model})")
             except Exception as e:
                 logger.warning(f"Failed to initialize scanner: {e}")
                 logger.warning("Falling back to fixed universe mode")
@@ -197,9 +219,16 @@ class ActiveTraderLLM:
             logger.info(f"Portfolio initialized: Backtest mode with $100,000 initial capital")
 
         elif self.config.mode in ["paper-live", "live"] and self.broker_executor:
-            # Paper-live/live: fetch from Alpaca immediately
+            # Paper-live/live: use cached account info if available, otherwise fetch from Alpaca
             try:
-                account_info = self.broker_executor.get_account_info()
+                # OPTIMIZATION: Use cached account info to avoid initial API call
+                if self._cached_account_info:
+                    account_info = self._cached_account_info
+                    logger.info("Portfolio initialized from CACHED account info (0 API calls)")
+                else:
+                    account_info = self.broker_executor.get_account_info()
+                    logger.debug("Portfolio initialized from Alpaca API fetch (1 API call)")
+
                 self.portfolio_state = PortfolioState(
                     cash=float(account_info['cash']),
                     equity=float(account_info['equity']),
@@ -229,53 +258,236 @@ class ActiveTraderLLM:
 
         logger.info("ActiveTrader-LLM initialized successfully")
 
-    def get_current_portfolio_state(self) -> PortfolioState:
+    def update_account_cache(self, account_info: dict):
+        """
+        Update cached account info (called by battle orchestrator or broker).
+
+        Args:
+            account_info: Dict with cash, equity, and other account fields
+        """
+        self._cached_account_info = account_info
+        self._account_cache_timestamp = datetime.now()
+        logger.debug("Account cache updated externally")
+
+    def invalidate_account_cache(self):
+        """
+        Invalidate the account cache (forces fresh fetch on next query).
+        """
+        self._cached_account_info = None
+        self._account_cache_timestamp = None
+        logger.debug("Account cache invalidated")
+
+    def get_current_portfolio_state(self, use_cache: bool = True) -> PortfolioState:
         """
         Get current portfolio state (mode-aware).
+
+        Args:
+            use_cache: If True, use cached account info when available (default=True)
+                      Set to False to force fresh fetch from broker
 
         Returns:
             PortfolioState with fresh values:
             - Backtest: Returns internally tracked state
-            - Paper-live/live: Fetches fresh from Alpaca broker
+            - Paper-live/live: Uses cached data or fetches fresh from Alpaca broker
 
         This ensures position sizing and risk checks always use
         accurate account balances in live trading.
         """
         if self.config.mode == "backtest":
-            # Use tracked state for backtest
-            logger.debug("Portfolio state source: Backtest tracking")
-            return self.portfolio_state
+            # Query real-time state from BacktestEngine if available
+            if self.backtest_state_provider:
+                logger.debug("Portfolio state source: BacktestEngine real-time query (0 API calls)")
+                return self.backtest_state_provider.get_current_state()
+            else:
+                # Fallback to internal tracking if no provider available
+                logger.debug("Portfolio state source: Backtest tracking (fallback, 0 API calls)")
+                return self.portfolio_state
 
         elif self.config.mode in ["paper-live", "live"] and self.broker_executor:
-            # Fetch fresh from Alpaca
-            try:
-                account_info = self.broker_executor.get_account_info()
+            # OPTIMIZATION: Use cached account info if recent enough (within 5 seconds)
+            cache_ttl_seconds = 5
+            cache_is_fresh = (
+                use_cache and
+                self._cached_account_info and
+                self._account_cache_timestamp and
+                (datetime.now() - self._account_cache_timestamp).total_seconds() < cache_ttl_seconds
+            )
 
-                # Get positions from current portfolio_state (already synced from position_manager)
-                positions_list = self.portfolio_state.positions
+            if cache_is_fresh:
+                # Use cached data - NO API CALL
+                account_info = self._cached_account_info
+                logger.debug("Portfolio state source: CACHED account info (0 API calls)")
+            else:
+                # Fetch fresh from Alpaca
+                try:
+                    account_info = self.broker_executor.get_account_info()
+                    # Update cache
+                    self._cached_account_info = account_info
+                    self._account_cache_timestamp = datetime.now()
+                    logger.debug("Portfolio state source: Alpaca API fetch (1 API call, cache updated)")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch fresh portfolio state from Alpaca: {e}")
+                    if self._cached_account_info:
+                        logger.warning("Using stale cached state as fallback")
+                        account_info = self._cached_account_info
+                    else:
+                        logger.warning("Using last known state as fallback")
+                        return self.portfolio_state
 
-                fresh_state = PortfolioState(
-                    cash=float(account_info['cash']),
-                    equity=float(account_info['equity']),
-                    positions=positions_list,
-                    daily_pnl=0.0  # Could calculate from last_equity
-                )
+            # Get positions from current portfolio_state (already synced from position_manager)
+            positions_list = self.portfolio_state.positions
 
-                logger.debug(
-                    f"Portfolio state source: Alpaca API "
-                    f"(equity=${fresh_state.equity:,.2f}, cash=${fresh_state.cash:,.2f})"
-                )
-                return fresh_state
+            fresh_state = PortfolioState(
+                cash=float(account_info['cash']),
+                equity=float(account_info['equity']),
+                positions=positions_list,
+                daily_pnl=0.0  # Could calculate from last_equity
+            )
 
-            except Exception as e:
-                logger.warning(f"Failed to fetch fresh portfolio state from Alpaca: {e}")
-                logger.warning("Using last known state as fallback")
-                return self.portfolio_state
+            logger.debug(
+                f"Portfolio state: equity=${fresh_state.equity:,.2f}, cash=${fresh_state.cash:,.2f}"
+            )
+            return fresh_state
 
         else:
             # Fallback to tracked state
-            logger.debug("Portfolio state source: Tracked state (fallback)")
+            logger.debug("Portfolio state source: Tracked state (fallback, 0 API calls)")
             return self.portfolio_state
+
+    def _apply_programmatic_filters(
+        self,
+        analyst_outputs: Dict,
+        current_prices: Dict,
+        min_volume_ratio: float = 2.0,
+        min_momentum_5d: float = 2.0,
+        max_distance_from_high: float = 10.0,
+        min_liquidity: float = 500_000_000,
+        min_adr: float = 1.0,
+        max_adr: float = 15.0
+    ) -> List[str]:
+        """
+        Apply programmatic filters to reduce API calls before trader agent analysis.
+
+        Filters stocks using basic technical criteria to identify high-quality candidates.
+        Only candidates that pass all filters will be sent to the LLM for analysis.
+
+        Args:
+            analyst_outputs: Dict of symbol -> analyst data
+            current_prices: Dict of symbol -> current price
+            min_volume_ratio: Minimum volume ratio (current / average)
+            min_momentum_5d: Minimum 5-day price change percentage
+            max_distance_from_high: Maximum distance from 52-week high (%)
+            min_liquidity: Minimum daily liquidity ($)
+            min_adr: Minimum average daily range (%)
+            max_adr: Maximum average daily range (%)
+
+        Returns:
+            List of symbols that pass all filters
+        """
+        logger.info(f"\n=== PROGRAMMATIC PRE-FILTERING (Reducing API Calls) ===")
+        logger.info(f"Initial candidates: {len(analyst_outputs)}")
+
+        filtered_symbols = []
+        filter_stats = {
+            'volume': 0,
+            'momentum': 0,
+            '52w_high': 0,
+            'liquidity': 0,
+            'adr': 0,
+            'passed_all': 0
+        }
+
+        for symbol, data in analyst_outputs.items():
+            features = data.get('features', {})
+            ohlcv = features.get('ohlcv', {})
+            daily_indicators = features.get('daily_indicators', {})
+
+            # Get required metrics
+            current_price = current_prices.get(symbol, 0.0)
+            current_volume = ohlcv.get('volume', 0)
+            avg_volume = features.get('avg_volume', 1)
+
+            # Calculate metrics
+            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0.0
+
+            # Calculate 5-day momentum from price series
+            price_series = data.get('price_series', [])
+            if len(price_series) >= 6:
+                price_5d_ago = price_series[-6]
+                momentum_5d = ((current_price - price_5d_ago) / price_5d_ago * 100) if price_5d_ago > 0 else 0.0
+            else:
+                momentum_5d = 0.0
+
+            # Get 52-week high
+            high_52w = daily_indicators.get('high_52w', current_price)
+            distance_from_high = ((current_price - high_52w) / high_52w * 100) if high_52w > 0 else -100.0
+
+            # Calculate daily liquidity (price * volume)
+            daily_liquidity = current_price * current_volume
+
+            # Calculate ADR (Average Daily Range)
+            atr = daily_indicators.get('ATR_14_daily', 0.0)
+            adr_percent = (atr / current_price * 100) if current_price > 0 else 0.0
+
+            # Apply filters
+            passed = True
+
+            # Filter 1: Volume ratio
+            if volume_ratio < min_volume_ratio:
+                passed = False
+            else:
+                filter_stats['volume'] += 1
+
+            # Filter 2: Momentum
+            if passed and momentum_5d < min_momentum_5d:
+                passed = False
+            else:
+                if passed:
+                    filter_stats['momentum'] += 1
+
+            # Filter 3: Distance from 52-week high
+            if passed and distance_from_high < -max_distance_from_high:
+                passed = False
+            else:
+                if passed:
+                    filter_stats['52w_high'] += 1
+
+            # Filter 4: Daily liquidity
+            if passed and daily_liquidity < min_liquidity:
+                passed = False
+            else:
+                if passed:
+                    filter_stats['liquidity'] += 1
+
+            # Filter 5: ADR range
+            if passed and (adr_percent < min_adr or adr_percent > max_adr):
+                passed = False
+            else:
+                if passed:
+                    filter_stats['adr'] += 1
+
+            if passed:
+                filter_stats['passed_all'] += 1
+                filtered_symbols.append(symbol)
+                logger.debug(
+                    f"{symbol}: PASS - Vol ratio: {volume_ratio:.2f}x, "
+                    f"Momentum: {momentum_5d:+.2f}%, "
+                    f"From high: {distance_from_high:.2f}%, "
+                    f"Liquidity: ${daily_liquidity/1e6:.1f}M, "
+                    f"ADR: {adr_percent:.2f}%"
+                )
+
+        logger.info(f"\nFilter Results:")
+        logger.info(f"  Passed volume (>{min_volume_ratio}x): {filter_stats['volume']}")
+        logger.info(f"  Passed momentum (>{min_momentum_5d}%): {filter_stats['momentum']}")
+        logger.info(f"  Passed 52w high (<{max_distance_from_high}%): {filter_stats['52w_high']}")
+        logger.info(f"  Passed liquidity (>${min_liquidity/1e6:.0f}M): {filter_stats['liquidity']}")
+        logger.info(f"  Passed ADR ({min_adr}-{max_adr}%): {filter_stats['adr']}")
+        logger.info(f"  PASSED ALL FILTERS: {filter_stats['passed_all']}")
+        logger.info(f"\nReduction: {len(analyst_outputs)} → {len(filtered_symbols)} symbols ({100*(1-len(filtered_symbols)/len(analyst_outputs)):.1f}% filtered)")
+        logger.info(f"API call savings: ~{len(analyst_outputs) - len(filtered_symbols)} calls avoided\n")
+
+        return filtered_symbols
 
     def run_decision_cycle(self):
         """
@@ -297,8 +509,9 @@ class ActiveTraderLLM:
         logger.info("=" * 80)
 
         try:
-            # Step 0a: Run scanner if enabled (determines universe)
+            # Step 0a: Determine active universe
             if self.config.scanner.enabled and self.scanner:
+                # Run full scanner
                 logger.info("Step 0a: Running two-stage market scanner...")
                 try:
                     self.scanned_universe = self.scanner.run_full_scan(
@@ -309,17 +522,33 @@ class ActiveTraderLLM:
                         max_candidates=self.config.scanner.stage2.max_candidates
                     )
                     logger.info(f"Scanner found {len(self.scanned_universe)} candidates")
-
-                    # Use scanned universe for this cycle
                     active_universe = self.scanned_universe
                 except Exception as e:
                     logger.error(f"Scanner failed: {e}")
                     logger.warning("Falling back to fixed universe")
                     active_universe = self.config.data_sources.universe
+            elif self.config.scanner.universe_source == "file" and self.config.scanner.universe_file_path:
+                # Load from pre-filtered universe file
+                logger.info(f"Step 0a: Loading pre-filtered universe from {self.config.scanner.universe_file_path}...")
+                try:
+                    file_path = Path(self.config.scanner.universe_file_path)
+                    if file_path.exists():
+                        with open(file_path, 'r') as f:
+                            active_universe = [line.strip() for line in f if line.strip()]
+                        logger.info(f"Loaded {len(active_universe)} symbols from pre-filtered universe")
+                        self.scanned_universe = active_universe
+                    else:
+                        logger.error(f"Universe file not found: {file_path}")
+                        logger.warning("Falling back to fixed universe from config")
+                        active_universe = self.config.data_sources.universe
+                except Exception as e:
+                    logger.error(f"Failed to load universe file: {e}")
+                    logger.warning("Falling back to fixed universe")
+                    active_universe = self.config.data_sources.universe
             else:
                 # Use fixed universe from config
                 active_universe = self.config.data_sources.universe
-                logger.info(f"Using fixed universe: {active_universe}")
+                logger.info(f"Using fixed universe from config: {len(active_universe)} symbols")
 
             # Step 1: Fetch data
             logger.info("Step 1: Fetching market data...")
@@ -380,13 +609,14 @@ class ActiveTraderLLM:
             # Update positions list in portfolio_state
             self.portfolio_state.positions = portfolio_dict.get('open_positions', [])
 
-            # In paper-live/live mode, refresh cash/equity from Alpaca
+            # In paper-live/live mode, refresh cash/equity from Alpaca (using cache)
             if self.config.mode in ["paper-live", "live"] and self.broker_executor:
                 try:
-                    account_info = self.broker_executor.get_account_info()
-                    self.portfolio_state.cash = float(account_info['cash'])
-                    self.portfolio_state.equity = float(account_info['equity'])
-                    logger.debug(f"Refreshed portfolio state from Alpaca: equity=${self.portfolio_state.equity:,.2f}, cash=${self.portfolio_state.cash:,.2f}")
+                    # OPTIMIZATION: Use get_current_portfolio_state with caching (0-1 API calls instead of 1)
+                    cached_state = self.get_current_portfolio_state(use_cache=True)
+                    self.portfolio_state.cash = cached_state.cash
+                    self.portfolio_state.equity = cached_state.equity
+                    logger.debug(f"Refreshed portfolio state (cached): equity=${self.portfolio_state.equity:,.2f}, cash=${self.portfolio_state.cash:,.2f}")
                 except Exception as e:
                     logger.warning(f"Could not refresh account info from Alpaca: {e}")
             # Note: In backtest mode, cash and equity are updated by SimulatedBroker
@@ -466,15 +696,88 @@ class ActiveTraderLLM:
                 'exposure_pct': portfolio_dict['total_exposure_pct']
             }
 
+            # Step 4a: Apply programmatic pre-filtering to reduce API calls
+            # Read filter settings from config
+            batch_config = self.config.model_dump().get('batch_processing', {})
+            filters = batch_config.get('filters', {})
+
+            filtered_symbols = self._apply_programmatic_filters(
+                analyst_outputs,
+                current_prices,
+                min_volume_ratio=filters.get('min_volume_ratio', 2.0),
+                min_momentum_5d=filters.get('min_momentum_5d', 2.0),
+                max_distance_from_high=filters.get('max_distance_from_high', 10.0),
+                min_liquidity=filters.get('min_liquidity', 500_000_000),
+                min_adr=filters.get('min_adr', 1.0),
+                max_adr=filters.get('max_adr', 15.0)
+            )
+
+            # Step 4b: Separate existing positions from new candidates
+            symbols_with_positions = []
+            new_candidate_symbols = []
+
             for symbol in analyst_outputs.keys():
+                if self.position_manager.has_open_position(symbol):
+                    symbols_with_positions.append(symbol)
+                elif symbol in filtered_symbols:
+                    new_candidate_symbols.append(symbol)
+
+            logger.info(f"\nSymbol breakdown:")
+            logger.info(f"  Existing positions to review: {len(symbols_with_positions)}")
+            logger.info(f"  New candidates (passed filters): {len(new_candidate_symbols)}")
+            logger.info(f"  Total symbols processed: {len(analyst_outputs)}")
+
+            # Step 4c: Review existing positions individually (close/hold decisions)
+            logger.info(f"\n=== REVIEWING {len(symbols_with_positions)} EXISTING POSITIONS ===")
+            for symbol in symbols_with_positions:
 
                 # Check if we already have a position in this symbol
                 existing_position = None
+
                 if self.position_manager.has_open_position(symbol):
                     # Get position details for LLM to decide hold/close
                     open_positions = [p for p in portfolio_dict['open_positions'] if p['symbol'] == symbol]
                     if open_positions:
                         existing_position = open_positions[0]
+
+                        # OPTIMIZATION: Skip LLM review for positions with small moves (<5%)
+                        # This lets mechanical stops/targets do their work without LLM interference
+                        current_price = current_prices.get(symbol, 0.0)
+                        entry_price = existing_position.get('entry_price', 0.0)
+
+                        if entry_price > 0 and current_price > 0:
+                            unrealized_pnl_pct = abs(((current_price - entry_price) / entry_price) * 100)
+
+                            # Only ask LLM to review if position shows significant movement (>5%)
+                            # Otherwise, let mechanical systems handle it
+                            if unrealized_pnl_pct < 5.0:
+                                logger.debug(
+                                    f"{symbol}: Skipping LLM review - position at {unrealized_pnl_pct:.2f}% "
+                                    f"(auto-HOLD, let mechanical stops/targets work)"
+                                )
+                                continue  # Skip to next symbol
+
+                # Prepare all open positions for comparative analysis
+                all_open_positions_data = []
+                all_open_positions = self.position_manager.get_open_positions()
+                for open_pos in all_open_positions:
+                    pos_current_price = current_prices.get(open_pos.symbol, open_pos.entry_price)
+                    pos_unrealized_pnl = (pos_current_price - open_pos.entry_price) * open_pos.shares
+                    pos_days_held = (datetime.now() - open_pos.entry_timestamp).days if hasattr(open_pos, 'entry_timestamp') else 0
+
+                    all_open_positions_data.append({
+                        'symbol': open_pos.symbol,
+                        'direction': open_pos.direction,
+                        'entry_price': open_pos.entry_price,
+                        'current_price': pos_current_price,
+                        'stop_loss': open_pos.stop_loss,
+                        'take_profit': open_pos.take_profit,
+                        'shares': open_pos.shares,
+                        'unrealized_pnl': pos_unrealized_pnl,
+                        'days_held': pos_days_held,
+                        'original_rationale': getattr(open_pos, 'entry_rationale', 'Not available'),
+                        'invalidation_condition': getattr(open_pos, 'invalidation_condition', 'Not specified')
+                    })
 
                 # Call trader agent with full context (nof1.ai style - raw data only)
                 plan = self.trader_agent.decide(
@@ -484,7 +787,8 @@ class ActiveTraderLLM:
                     self.config.risk_parameters.model_dump(),
                     memory_context=None,  # TODO: Add recent performance context
                     existing_position=existing_position,
-                    account_state=account_state
+                    account_state=account_state,
+                    all_open_positions=all_open_positions_data
                 )
 
                 if plan:
@@ -492,10 +796,34 @@ class ActiveTraderLLM:
                     if plan.action == 'close':
                         # LLM decided to close existing position
                         logger.info(f"{symbol}: LLM decided to CLOSE position (invalidation triggered)")
-                        if self.position_manager.has_open_position(symbol):
+
+                        # VALIDATION: Prevent premature LLM closes
+                        if self.position_manager.has_open_position(symbol) and existing_position:
+                            current_price = current_prices.get(symbol, 0.0)
+                            entry_price = existing_position.get('entry_price', 0.0)
+
+                            # Calculate unrealized P&L percentage
+                            if entry_price > 0:
+                                unrealized_pnl_pct = ((current_price - entry_price) / entry_price) * 100
+
+                                # Block premature closes if position shows only minor drawdown (<5%)
+                                if abs(unrealized_pnl_pct) < 5.0:
+                                    logger.warning(
+                                        f"{symbol}: LLM close BLOCKED - position only at {unrealized_pnl_pct:+.2f}% "
+                                        f"(need >5% move for LLM override). Let mechanical stops/targets handle this."
+                                    )
+                                    logger.info(f"{symbol}: Converting CLOSE to HOLD (blocked premature exit)")
+                                    continue  # Don't allow close, skip to next symbol
+
+                                # Allow LLM close - significant move detected (>5%)
+                                logger.info(
+                                    f"{symbol}: LLM close allowed - significant P&L change ({unrealized_pnl_pct:+.2f}%)"
+                                )
+
+                            # Execute the close
                             closed_pos = self.position_manager.close_position(
                                 symbol=symbol,
-                                exit_price=current_prices.get(symbol, 0.0),
+                                exit_price=current_price,
                                 exit_reason=f"LLM decision: {plan.rationale[:100]}"
                             )
                             logger.info(f"Position CLOSED: {symbol} @ {closed_pos.exit_price:.2f}, P&L: ${closed_pos.realized_pnl:.2f}")
@@ -512,12 +840,49 @@ class ActiveTraderLLM:
                         continue
 
                     elif plan.action in ['open_long', 'open_short']:
-                        # LLM decided to open new position
+                        # LLM decided to open new position (from existing position review)
                         trade_plans.append(plan)
                         logger.info(
                             f"Trade plan for {symbol}: {plan.action} @ {plan.entry:.2f} "
                             f"(size: {plan.position_size_pct*100:.1f}%, confidence: {plan.confidence:.2f})"
                         )
+
+            # Step 4d: Batch process new candidates (MAJOR API CALL SAVINGS)
+            logger.info(f"\n=== BATCH ANALYZING {len(new_candidate_symbols)} NEW CANDIDATES ===")
+
+            if new_candidate_symbols:
+                # Process in batches (size from config)
+                batch_size = batch_config.get('batch_size', 10)
+                total_batches = (len(new_candidate_symbols) + batch_size - 1) // batch_size
+
+                logger.info(f"Processing {len(new_candidate_symbols)} candidates in {total_batches} batches of {batch_size}")
+
+                for batch_idx in range(0, len(new_candidate_symbols), batch_size):
+                    batch_symbols = new_candidate_symbols[batch_idx:batch_idx + batch_size]
+                    batch_num = (batch_idx // batch_size) + 1
+
+                    logger.info(f"\nBatch {batch_num}/{total_batches}: Analyzing {len(batch_symbols)} stocks in single API call")
+                    logger.debug(f"  Symbols: {', '.join(batch_symbols)}")
+
+                    # Single API call for entire batch
+                    batch_plans = self.trader_agent.decide_batch(
+                        symbols=batch_symbols,
+                        analyst_outputs=analyst_outputs,
+                        risk_params=self.config.risk_parameters.model_dump(),
+                        account_state=account_state
+                    )
+
+                    # Add batch results to trade plans
+                    for plan in batch_plans:
+                        if plan.action in ['open_long', 'open_short']:
+                            trade_plans.append(plan)
+                            logger.info(
+                                f"Trade plan from batch: {plan.symbol} {plan.action} @ {plan.entry:.2f} "
+                                f"(size: {plan.position_size_pct*100:.1f}%, confidence: {plan.confidence:.2f})"
+                            )
+
+                logger.info(f"\nBatch processing complete: Generated {len([p for p in trade_plans if p.symbol in new_candidate_symbols])} trade plans from {len(new_candidate_symbols)} candidates")
+                logger.info(f"API call reduction: {len(new_candidate_symbols)} individual calls → {total_batches} batch calls ({100*(1-total_batches/len(new_candidate_symbols)) if len(new_candidate_symbols) > 0 else 0:.1f}% reduction)")
 
             if not trade_plans:
                 logger.info("No trade plans generated this cycle.")
@@ -528,8 +893,9 @@ class ActiveTraderLLM:
             approved_plans = []
 
             for plan in trade_plans:
-                # Fetch fresh portfolio state (from Alpaca in live mode)
-                current_portfolio = self.get_current_portfolio_state()
+                # OPTIMIZATION: Use cached portfolio state for risk validation
+                # Cache valid for 5 seconds - reduces API calls during batch validation
+                current_portfolio = self.get_current_portfolio_state(use_cache=True)
                 decision = self.risk_manager.evaluate(plan, current_portfolio, current_prices)
 
                 # Log decision
@@ -562,6 +928,37 @@ class ActiveTraderLLM:
                 logger.info("Step 7: Simulated execution via SimulatedBroker...")
 
                 for trade_id, plan in approved_plans:
+                    # IMPORTANT: Use current portfolio_state cash (updated after each trade)
+                    # Don't query backtest_state_provider as it hasn't been updated yet
+                    current_cash = self.portfolio_state.cash
+                    current_equity = self.portfolio_state.equity
+
+                    # Check if we have enough cash for this position
+                    position_value = plan.position_size_pct * current_equity
+                    if position_value > current_cash:
+                        logger.warning(
+                            f"Skipping {plan.symbol}: Insufficient cash "
+                            f"(need ${position_value:,.2f}, have ${current_cash:,.2f})"
+                        )
+
+                        # Reevaluate existing positions to see if any should be closed
+                        logger.info("Reevaluating existing positions for potential closure...")
+                        open_positions = self.position_manager.get_open_positions()
+
+                        if open_positions:
+                            logger.info(
+                                f"Found {len(open_positions)} open positions. "
+                                f"Consider closing underperforming positions to free up capital."
+                            )
+                            # Note: Existing positions will be evaluated by exit_monitor in next cycle
+
+                        continue  # Skip this trade, move to next
+
+                    logger.info(
+                        f"Pre-trade check: ${current_cash:,.2f} cash available, "
+                        f"${position_value:,.2f} needed for {plan.symbol}"
+                    )
+
                     # Submit trade to simulated broker
                     result = self.simulated_broker.submit_trade(plan)
 
@@ -626,6 +1023,37 @@ class ActiveTraderLLM:
 
                 for trade_id, plan in approved_plans:
                     try:
+                        # IMPORTANT: Refresh portfolio state before EACH trade (using cache for speed)
+                        # OPTIMIZATION: Cache valid for 5 seconds, reduces redundant API calls
+                        current_portfolio = self.get_current_portfolio_state(use_cache=True)
+                        current_cash = current_portfolio.cash
+                        current_equity = current_portfolio.equity
+
+                        # Check if we have enough cash for this position
+                        position_value = plan.position_size_pct * current_equity
+                        if position_value > current_cash:
+                            logger.warning(
+                                f"Skipping {plan.symbol}: Insufficient cash "
+                                f"(need ${position_value:,.2f}, have ${current_portfolio.cash:,.2f})"
+                            )
+
+                            # Reevaluate existing positions
+                            logger.info("Reevaluating existing positions for potential closure...")
+                            open_positions = self.position_manager.get_open_positions()
+
+                            if open_positions:
+                                logger.info(
+                                    f"Found {len(open_positions)} open positions. "
+                                    f"Consider closing underperforming positions to free up capital."
+                                )
+
+                            continue  # Skip this trade
+
+                        logger.info(
+                            f"Pre-trade check: ${current_cash:,.2f} cash available, "
+                            f"${position_value:,.2f} needed for {plan.symbol}"
+                        )
+
                         # Submit order to broker
                         result = self.broker_executor.submit_trade(
                             plan=plan,

@@ -1,14 +1,15 @@
 """
-Scanner Orchestrator: Coordinates the entire two-stage scanning process.
+Simplified Scanner Orchestrator: NO interpretations, just raw data to LLM.
 
 Workflow:
-1. Load universe (5000+ stocks)
-2. Stage 1: Market-wide summary → LLM guidance (1 LLM call)
-3. Stage 2A: Apply programmatic filters (NO LLM)
-4. Stage 2B: Batch deep analysis (5-10 LLM calls)
-5. Return final candidates for trading agent
+1. Load universe with pre-filtering (API optimization ONLY)
+2. Calculate raw metrics for all stocks
+3. Send batches of raw metrics to LLM
+4. LLM analyzes raw data and picks stocks (NO thresholds)
+5. Return LLM's picks
 
-Total: 6-11 LLM calls, $0.16 cost, 3-5 minutes
+CRITICAL: No Stage 1 guidance, no programmatic filtering, no hardcoded thresholds.
+The LLM sees ONLY raw calculated metrics and decides what's interesting.
 """
 
 import logging
@@ -18,10 +19,7 @@ from datetime import datetime, timedelta
 
 from .universe_loader import UniverseLoader, TradableStock
 from .market_aggregator import MarketAggregator
-from .stage1_analyzer import Stage1Analyzer, Stage1Guidance
-from .programmatic_filter import ProgrammaticFilter, FilterResult
-from .raw_data_scanner import RawDataScanner, TechnicalIndicators
-from .stage2_analyzer import Stage2Analyzer
+from .raw_metrics_analyzer import RawMetricsAnalyzer
 from .scanner_db import ScannerDB, ScanResult
 
 # Import Alpaca bars ingestor
@@ -33,12 +31,12 @@ from data_ingestion.alpaca_bars_ingestor import AlpacaBarsIngestor
 logger = logging.getLogger(__name__)
 
 
-class ScannerOrchestrator:
+class SimplifiedScannerOrchestrator:
     """
-    Main coordinator for two-stage market scanner.
+    Simplified scanner that sends raw metrics directly to LLM.
 
-    Orchestrates the complete scanning workflow from universe loading
-    to final candidate selection.
+    NO hardcoded thresholds, NO pre-filtering logic, NO interpretations.
+    Just raw data → LLM → picks.
     """
 
     def __init__(
@@ -50,13 +48,11 @@ class ScannerOrchestrator:
         paper: bool = True,
         openai_api_key: Optional[str] = None,
         anthropic_api_key: Optional[str] = None,
-        llm_provider: str = "openai",
-        llm_model: str = "gpt-3.5-turbo",
         db_path: str = "data/scanner.db",
         requests_per_minute: int = 200
     ):
         """
-        Initialize scanner orchestrator.
+        Initialize simplified scanner orchestrator.
 
         Args:
             data_fetcher: Optional fallback data fetcher (yfinance)
@@ -66,8 +62,6 @@ class ScannerOrchestrator:
             paper: Use paper trading endpoint (default True for safety)
             openai_api_key: OpenAI API key for LLM calls (legacy)
             anthropic_api_key: Anthropic API key for LLM calls
-            llm_provider: LLM provider (openai, anthropic, local)
-            llm_model: LLM model to use
             db_path: Path to scanner database
             requests_per_minute: Alpaca rate limit (200 standard, 1000 unlimited)
         """
@@ -97,73 +91,63 @@ class ScannerOrchestrator:
         )
         self.market_aggregator = MarketAggregator(data_fetcher=data_fetcher)
 
-        # Determine LLM API key based on provider
-        if llm_provider == "anthropic":
-            llm_api_key = anthropic_api_key
-        else:
-            llm_api_key = openai_api_key or anthropic_api_key  # Fall back if needed
+        # Use anthropic_api_key if provided, otherwise fall back to openai_api_key
+        llm_api_key = anthropic_api_key or openai_api_key
+        self.raw_metrics_analyzer = RawMetricsAnalyzer(api_key=llm_api_key)
 
-        # Initialize LLM-powered analyzers with unified client
-        self.stage1_analyzer = Stage1Analyzer(
-            api_key=llm_api_key,
-            model=llm_model,
-            provider=llm_provider
-        )
-        self.programmatic_filter = ProgrammaticFilter()
-        self.raw_data_scanner = RawDataScanner(data_fetcher=data_fetcher)
-        self.stage2_analyzer = Stage2Analyzer(
-            api_key=llm_api_key,
-            model=llm_model,
-            provider=llm_provider
-        )
         self.scanner_db = ScannerDB(db_path=db_path)
 
     def run_full_scan(
         self,
         force_refresh_universe: bool = False,
         refresh_hours: int = 24,
-        batch_size: int = 15,
-        max_batches: int = 10,
-        max_candidates: int = 150,
+        batch_size: int = 50,
+        max_batches: Optional[int] = None,
         pre_filter_enabled: bool = True,
         min_price: Optional[float] = 10.0,
         min_avg_volume: Optional[int] = 1_000_000,
-        min_market_cap: Optional[float] = 1_000_000_000
+        min_market_cap: Optional[float] = 1_000_000_000,
+        min_daily_liquidity: Optional[float] = 500_000_000,
+        min_adr_percent: Optional[float] = 1.0,
+        max_adr_percent: Optional[float] = 15.0
     ) -> List[str]:
         """
-        Execute complete two-stage scan.
+        Execute simplified scan with raw metrics.
 
         Args:
             force_refresh_universe: Force refresh universe from API
             refresh_hours: Max universe cache age
-            batch_size: Stocks per Stage 2 batch
-            max_batches: Max Stage 2 batches
-            max_candidates: Max candidates for Stage 2
-            pre_filter_enabled: Enable pre-filtering before data fetch
+            batch_size: Stocks per LLM batch (default 50)
+            max_batches: Max batches to process (None = all)
+            pre_filter_enabled: Enable pre-filtering (API optimization ONLY)
             min_price: Minimum stock price (default $10)
             min_avg_volume: Minimum avg daily volume (default 1M shares)
             min_market_cap: Minimum market cap (default $1B)
+            min_daily_liquidity: Minimum daily liquidity in USD (default $500M)
+            min_adr_percent: Minimum ADR percentage (default 1%)
+            max_adr_percent: Maximum ADR percentage (default 15%)
 
         Returns:
-            List of final candidate symbols
+            List of LLM-picked symbols
         """
         start_time = time.time()
         scan_id = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         llm_calls = 0
 
         logger.info("="*60)
-        logger.info(f"Starting Two-Stage Market Scan: {scan_id}")
+        logger.info(f"Starting Simplified Market Scan: {scan_id}")
+        logger.info("NO thresholds - sending raw metrics to LLM")
         logger.info("="*60)
 
         # ===================================================================
-        # LOAD UNIVERSE
+        # STEP 1: LOAD UNIVERSE
         # ===================================================================
         logger.info("\n[STEP 1] Loading tradable universe...")
         universe = self.universe_loader.load_tradable_universe(
             force_refresh=force_refresh_universe,
             refresh_hours=refresh_hours,
-            optionable_only=False,  # Disabled - API doesn't properly support this flag
-            enrich_metadata=pre_filter_enabled  # Enrich if pre-filtering is enabled
+            optionable_only=True,
+            enrich_metadata=pre_filter_enabled  # Enrich if pre-filtering enabled
         )
 
         if not universe:
@@ -173,11 +157,13 @@ class ScannerOrchestrator:
         logger.info(f"Loaded {len(universe)} tradable stocks")
 
         # ===================================================================
-        # PRE-FILTER UNIVERSE (NEW: Reduce API calls by 80-90%)
+        # STEP 2: PRE-FILTER (API OPTIMIZATION ONLY - NOT INTERPRETATION)
         # ===================================================================
         if pre_filter_enabled:
-            logger.info("\n[STEP 1b] Pre-filtering universe before data fetch...")
-            logger.info(f"  Criteria: price>${min_price}, volume>{min_avg_volume:,}, market_cap>${min_market_cap:,}")
+            logger.info("\n[STEP 2] Pre-filtering for API/cost optimization...")
+            logger.info(f"  Phase 1 (metadata): price>${min_price}, volume>{min_avg_volume:,}, market_cap>${min_market_cap/1e9:.1f}B")
+            logger.info(f"  Phase 2 (after metrics): liquidity>${min_daily_liquidity/1e6:.0f}M, ADR {min_adr_percent}%-{max_adr_percent}%")
+            logger.info("  NOTE: This is cost optimization, NOT interpretation - LLM still decides on raw metrics")
 
             universe = self.universe_loader.pre_filter_universe(
                 universe=universe,
@@ -192,24 +178,20 @@ class ScannerOrchestrator:
 
             logger.info(f"Pre-filtered universe: {len(universe)} stocks remaining")
         else:
-            logger.info("\n[STEP 1b] Pre-filter DISABLED - will fetch data for all stocks")
+            logger.info("\n[STEP 2] Pre-filter DISABLED - will fetch data for all stocks")
 
         # ===================================================================
-        # STAGE 1: MARKET-WIDE SUMMARY
+        # STEP 3: CALCULATE RAW METRICS
         # ===================================================================
-        logger.info("\n[STEP 2] Stage 1: Calculating market-wide statistics (NO LLM)...")
+        logger.info("\n[STEP 3] Calculating raw metrics for all stocks...")
 
-        # Use filtered universe for market statistics
-        logger.info(f"Calculating metrics for {len(universe)} stocks...")
-
-        # Fetch price data using Alpaca
         stock_metrics = []
         symbols_to_fetch = [stock.symbol for stock in universe]
         sector_map = {stock.symbol: stock.sector for stock in universe}
 
         logger.info(f"Fetching price data for {len(symbols_to_fetch)} stocks...")
 
-        # Use Alpaca ingestor if available, otherwise fallback to yfinance
+        # Use Alpaca ingestor if available
         if self.alpaca_ingestor:
             try:
                 price_data_map = self.alpaca_ingestor.fetch_bars_batched(
@@ -231,7 +213,7 @@ class ScannerOrchestrator:
                     if metrics:
                         stock_metrics.append(metrics)
 
-                logger.info(f"Calculated metrics for {len(stock_metrics)} stocks")
+                logger.info(f"Calculated raw metrics for {len(stock_metrics)} stocks")
 
             except Exception as e:
                 logger.error(f"Error fetching data from Alpaca: {e}")
@@ -262,116 +244,90 @@ class ScannerOrchestrator:
                         logger.error("Cannot proceed without market data. Aborting scan.")
                         return []
                 else:
-                    logger.error("No data source available (Alpaca and yfinance both failed). Aborting scan.")
+                    logger.error("No data source available. Aborting scan.")
                     return []
         else:
-            logger.error("No Alpaca ingestor configured and no fallback available. Aborting scan.")
-            logger.error("Please provide either Alpaca API credentials or a data_fetcher instance.")
+            logger.error("No Alpaca ingestor configured. Aborting scan.")
             return []
 
-        # Aggregate by sector
-        sector_stats = self.market_aggregator.aggregate_by_sector(stock_metrics)
-
-        # Generate market summary
-        market_summary = self.market_aggregator.generate_market_summary(
-            stock_metrics,
-            sector_stats
-        )
-
-        logger.info(f"Market summary generated:")
-        logger.info(f"  Total stocks: {market_summary.total_stocks}")
-        logger.info(f"  Market breadth: {market_summary.market_breadth_score:.2f}")
-        logger.info(f"  Sectors analyzed: {len(market_summary.sectors)}")
-
-        # ===================================================================
-        # STAGE 1: LLM INTERPRETATION (1 LLM CALL)
-        # ===================================================================
-        logger.info("\n[STEP 3] Stage 1: LLM analyzing market (1 LLM call)...")
-
-        stage1_guidance = self.stage1_analyzer.analyze(market_summary)
-        llm_calls += 1
-
-        if not stage1_guidance:
-            logger.error("Stage 1 LLM failed - cannot proceed without market interpretation")
-            logger.error("Refusing to use hardcoded fallback thresholds for market scanning")
-            return []
-
-        logger.info(f"Stage 1 Guidance:")
-        logger.info(f"  Market bias: {stage1_guidance.market_bias}")
-        logger.info(f"  Focus sectors: {stage1_guidance.focus_sectors}")
-        logger.info(f"  Focus patterns: {stage1_guidance.focus_patterns}")
-        logger.info(f"  Volume threshold: {stage1_guidance.filtering_criteria.volume_ratio_threshold}x")
-        logger.info(f"  52w high threshold: {stage1_guidance.filtering_criteria.distance_from_52w_high_threshold_pct}%")
-
-        # ===================================================================
-        # STAGE 2A: PROGRAMMATIC FILTERING (NO LLM)
-        # ===================================================================
-        logger.info("\n[STEP 4] Stage 2A: Applying programmatic filters (NO LLM)...")
-
-        filter_result = self.programmatic_filter.apply_filters(
-            stock_metrics,
-            stage1_guidance,
-            max_candidates=max_candidates
-        )
-
-        logger.info(f"Filter results:")
-        logger.info(f"  Initial: {filter_result.initial_count}")
-        logger.info(f"  Filtered: {filter_result.filtered_count}")
-        logger.info(f"  Candidates: {filter_result.candidates[:10]}...")  # Show first 10
-
-        if not filter_result.candidates:
-            logger.warning("No candidates passed filters. Scan complete.")
+        if not stock_metrics:
+            logger.error("No metrics calculated. Aborting scan.")
             return []
 
         # ===================================================================
-        # STAGE 2B: DEEP ANALYSIS WITH LLM (5-10 LLM CALLS)
+        # STEP 3B: POST-METRICS FILTER (API/COST OPTIMIZATION)
         # ===================================================================
-        logger.info("\n[STEP 5] Stage 2B: Deep analysis in batches...")
+        if pre_filter_enabled and (min_daily_liquidity or min_adr_percent or max_adr_percent):
+            logger.info("\n[STEP 3B] Post-metrics filtering (ADR and liquidity optimization)...")
+            logger.info(f"  Criteria: liquidity>${min_daily_liquidity/1e6:.0f}M, ADR {min_adr_percent}%-{max_adr_percent}%")
 
-        # Fetch detailed indicators for candidates
-        logger.info(f"Fetching technical indicators for {len(filter_result.candidates)} candidates...")
+            initial_count = len(stock_metrics)
+            filtered_metrics = []
+            removed_reasons = {
+                'low_liquidity': 0,
+                'low_adr': 0,
+                'high_adr': 0,
+                'missing_data': 0
+            }
 
-        indicators_map = {}
+            for metrics in stock_metrics:
+                # Check liquidity
+                if min_daily_liquidity is not None:
+                    if metrics.daily_liquidity is None:
+                        removed_reasons['missing_data'] += 1
+                        continue
+                    if metrics.daily_liquidity < min_daily_liquidity:
+                        removed_reasons['low_liquidity'] += 1
+                        continue
 
-        if self.alpaca_ingestor:
-            try:
-                # Fetch detailed price data for candidates
-                candidate_price_data = self.alpaca_ingestor.fetch_bars_batched(
-                    symbols=filter_result.candidates,
-                    timeframe="1Day",
-                    start=datetime.now() - timedelta(days=300),  # Need more data for 200-day MA
-                    end=datetime.now(),
-                    use_cache=True
-                )
+                # Check ADR range
+                if min_adr_percent is not None or max_adr_percent is not None:
+                    if metrics.adr_percent is None:
+                        removed_reasons['missing_data'] += 1
+                        continue
+                    if min_adr_percent is not None and metrics.adr_percent < min_adr_percent:
+                        removed_reasons['low_adr'] += 1
+                        continue
+                    if max_adr_percent is not None and metrics.adr_percent > max_adr_percent:
+                        removed_reasons['high_adr'] += 1
+                        continue
 
-                # Calculate detailed indicators using pandas_ta
-                for symbol, price_df in candidate_price_data.items():
-                    indicators = self.raw_data_scanner.fetch_indicators(symbol, price_df)
-                    if indicators:
-                        indicators_map[symbol] = indicators
+                filtered_metrics.append(metrics)
 
-                logger.info(f"Calculated indicators for {len(indicators_map)} candidates")
+            removed_total = initial_count - len(filtered_metrics)
+            logger.info(f"Post-metrics filter: {initial_count} → {len(filtered_metrics)} stocks ({removed_total} removed)")
+            if removed_total > 0:
+                logger.info(f"  Removal reasons:")
+                for reason, count in removed_reasons.items():
+                    if count > 0:
+                        logger.info(f"    {reason}: {count}")
 
-            except Exception as e:
-                logger.error(f"Error fetching indicators: {e}")
-                logger.warning("Will use fallback selection")
-        else:
-            logger.warning("No Alpaca ingestor available. Using fallback selection")
+            stock_metrics = filtered_metrics
 
-        # Analyze in batches
-        if not indicators_map:
-            logger.error("Cannot proceed with Stage 2: No technical indicators available")
-            logger.error("Stage 2 requires real indicator data for deep analysis")
-            return []
+            if not stock_metrics:
+                logger.error("Post-metrics filter removed all stocks. Try relaxing ADR/liquidity criteria.")
+                return []
 
-        final_candidates = self.stage2_analyzer.analyze_all_batches(
-            filter_result.candidates,
-            indicators_map,
-            stage1_guidance,
+        # ===================================================================
+        # STEP 4: SEND RAW METRICS TO LLM IN BATCHES
+        # ===================================================================
+        logger.info("\n[STEP 4] Sending raw metrics to LLM for analysis...")
+        logger.info(f"  Batch size: {batch_size} stocks")
+        logger.info(f"  Max batches: {max_batches or 'unlimited'}")
+        logger.info("  LLM will analyze raw data and pick stocks (NO thresholds)")
+
+        final_candidates = self.raw_metrics_analyzer.analyze_all_batches(
+            all_metrics=stock_metrics,
             batch_size=batch_size,
             max_batches=max_batches
         )
-        llm_calls += min(max_batches, (len(filter_result.candidates) + batch_size - 1) // batch_size)
+
+        # Count LLM calls
+        num_batches = min(
+            (len(stock_metrics) + batch_size - 1) // batch_size,
+            max_batches if max_batches else float('inf')
+        )
+        llm_calls = int(num_batches)
 
         # ===================================================================
         # SAVE RESULTS
@@ -383,7 +339,8 @@ class ScannerOrchestrator:
         logger.info("\n" + "="*60)
         logger.info("SCAN COMPLETE")
         logger.info("="*60)
-        logger.info(f"Final candidates: {len(final_candidates)}")
+        logger.info(f"Stocks analyzed: {len(stock_metrics)}")
+        logger.info(f"Final LLM picks: {len(final_candidates)}")
         logger.info(f"Candidates: {final_candidates}")
         logger.info(f"Execution time: {execution_time:.1f} seconds")
         logger.info(f"LLM calls: {llm_calls}")
@@ -394,8 +351,12 @@ class ScannerOrchestrator:
         scan_result = ScanResult(
             scan_id=scan_id,
             timestamp=datetime.now().isoformat(),
-            stage1_guidance=stage1_guidance.dict(),
-            filtered_count=filter_result.filtered_count,
+            stage1_guidance={
+                "market_bias": "N/A - raw metrics scan",
+                "focus_sectors": [],
+                "focus_patterns": []
+            },  # Placeholder since we don't use Stage 1
+            filtered_count=len(final_candidates),
             final_candidates=final_candidates,
             execution_time_seconds=execution_time,
             llm_calls=llm_calls,
@@ -412,36 +373,34 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO)
 
-    # IMPORTANT: This scanner requires REAL market data from Alpaca or yfinance
-    # Do NOT use mock/sample data - it defeats the entire purpose of the system
-
-    # Option 1: Use Alpaca (recommended for production)
+    # Requires REAL market data from Alpaca
     alpaca_api_key = os.getenv('ALPACA_API_KEY')
     alpaca_secret_key = os.getenv('ALPACA_SECRET_KEY')
 
     if not alpaca_api_key or not alpaca_secret_key:
-        logger.error("ALPACA_API_KEY and ALPACA_SECRET_KEY must be set as environment variables")
+        logger.error("ALPACA_API_KEY and ALPACA_SECRET_KEY must be set")
         logger.error("This scanner requires REAL market data to function properly")
         exit(1)
 
-    # Option 2: Optionally provide yfinance fallback
-    # from data_ingestion.price_volume_ingestor import PriceVolumeIngestor
-    # data_fetcher = PriceVolumeIngestor()
-
-    orchestrator = ScannerOrchestrator(
-        data_fetcher=None,  # Optional yfinance fallback
+    orchestrator = SimplifiedScannerOrchestrator(
         alpaca_api_key=alpaca_api_key,
         alpaca_secret_key=alpaca_secret_key,
         anthropic_api_key=os.getenv('ANTHROPIC_API_KEY')
     )
 
-    # Run scan with REAL market data
+    # Run scan with raw metrics and ALL 5 filters
     candidates = orchestrator.run_full_scan(
         force_refresh_universe=False,
         refresh_hours=24,
-        batch_size=15,
-        max_batches=10,
-        max_candidates=150
+        batch_size=50,
+        max_batches=None,  # Process ALL stocks that pass 5 filters
+        pre_filter_enabled=True,
+        min_price=10.0,
+        min_avg_volume=1_000_000,
+        min_market_cap=1_000_000_000,
+        min_daily_liquidity=500_000_000,  # $500M
+        min_adr_percent=1.0,  # 1%
+        max_adr_percent=15.0  # 15%
     )
 
-    print(f"\n\nFinal candidates for trading: {candidates}")
+    print(f"\n\nFinal LLM picks for trading: {candidates}")

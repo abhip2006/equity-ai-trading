@@ -19,6 +19,7 @@ from active_trader_llm.database.backtest_models import (
 )
 from active_trader_llm.execution.position_manager import PositionManager
 from active_trader_llm.data_ingestion.price_volume_ingestor import PriceVolumeIngestor
+from active_trader_llm.risk.risk_manager import PortfolioState
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,27 @@ class BacktestEngine:
 
         logger.info(f"BacktestEngine initialized: {start_date} to {end_date}")
         logger.info(f"Initial capital: ${initial_capital:,.2f}")
+
+    def get_current_state(self) -> PortfolioState:
+        """
+        Provide real-time portfolio state for backtesting.
+
+        This method is called by ActiveTraderLLM during risk checks and
+        position sizing to get the current portfolio state, ensuring
+        decisions are made with up-to-date cash and equity values.
+
+        Returns:
+            PortfolioState with current cash, equity, and positions
+        """
+        open_positions = self.position_manager.get_open_positions()
+        positions_value = sum([p.entry_price * p.shares for p in open_positions])
+
+        return PortfolioState(
+            cash=self.cash,
+            equity=self.cash + positions_value,
+            positions=[],  # Position details populated by position_manager
+            daily_pnl=0.0  # P&L calculated by position_manager
+        )
 
     def get_market_days(self) -> List[date]:
         """
@@ -249,8 +271,8 @@ class BacktestEngine:
         from active_trader_llm.main import ActiveTraderLLM
 
         # Initialize trading system with our config in backtest mode
-        # Note: We'll need to monkey-patch the data fetching to be date-specific
-        trader = ActiveTraderLLM(self.config_path, mode_override="backtest")
+        # Pass self as backtest_state_provider for real-time portfolio state queries
+        trader = ActiveTraderLLM(self.config_path, mode_override="backtest", backtest_state_provider=self)
 
         # Validate backtest mode setup
         assert trader.simulated_broker is not None, "Backtest mode must use SimulatedBroker"
@@ -317,11 +339,9 @@ class BacktestEngine:
 
             return df
 
-        # Apply the monkey-patch
-        # TEMPORARILY DISABLED for debugging - using current data instead of historical
-        # TODO: Fix the date filtering issue (1970 epoch problem)
-        # trader.ingestor.fetch_prices = date_limited_fetch
-        logger.warning("[BACKTEST] Monkey-patch disabled - using current data for testing")
+        # Apply the monkey-patch to filter historical data correctly
+        trader.ingestor.fetch_prices = date_limited_fetch
+        logger.info(f"[BACKTEST] Historical data filtering enabled - market_date: {market_date}")
 
         # Wrap LLM calls to log to database
         self._wrap_llm_logging(trader)
@@ -421,8 +441,13 @@ class BacktestEngine:
                     )
 
                     if not price_df.empty:
-                        # Filter to current date
-                        price_df.index = pd.to_datetime(price_df.index)
+                        # Set timestamp column as index for date filtering
+                        if 'timestamp' in price_df.columns:
+                            price_df['timestamp'] = pd.to_datetime(price_df['timestamp'])
+                            price_df = price_df.set_index('timestamp')
+                        else:
+                            price_df.index = pd.to_datetime(price_df.index)
+
                         logger.debug(f"Price data date range: {price_df.index.min()} to {price_df.index.max()}")
                         logger.debug(f"Looking for market_date: {market_date}")
 
@@ -430,14 +455,29 @@ class BacktestEngine:
                         logger.debug(f"Filtered prices shape: {today_prices.shape}, empty: {today_prices.empty}")
 
                         if not today_prices.empty:
-                            logger.debug(f"Available symbols in data: {list(today_prices.columns.get_level_values(0).unique())}")
-                            for symbol in symbols:
-                                # Check if symbol exists in level 0 (symbol level) of MultiIndex columns
-                                if symbol in today_prices.columns.get_level_values(0):
-                                    current_prices[symbol] = float(today_prices[symbol]['close'].iloc[-1])
-                                    logger.debug(f"EOD price for {symbol}: ${current_prices[symbol]:.2f}")
+                            # Handle both MultiIndex and flat column formats
+                            if isinstance(today_prices.columns, pd.MultiIndex):
+                                # MultiIndex format: (symbol, field)
+                                logger.debug(f"Available symbols in data: {list(today_prices.columns.get_level_values(0).unique())}")
+                                for symbol in symbols:
+                                    if symbol in today_prices.columns.get_level_values(0):
+                                        current_prices[symbol] = float(today_prices[symbol]['close'].iloc[-1])
+                                        logger.debug(f"EOD price for {symbol}: ${current_prices[symbol]:.2f}")
+                                    else:
+                                        logger.warning(f"Symbol {symbol} not found in price data columns")
+                            else:
+                                # Flat format with 'symbol' column
+                                if 'symbol' in today_prices.columns:
+                                    logger.debug(f"Available symbols in data: {today_prices['symbol'].unique().tolist()}")
+                                    for symbol in symbols:
+                                        symbol_data = today_prices[today_prices['symbol'] == symbol]
+                                        if not symbol_data.empty:
+                                            current_prices[symbol] = float(symbol_data['close'].iloc[0])
+                                            logger.debug(f"EOD price for {symbol}: ${current_prices[symbol]:.2f}")
+                                        else:
+                                            logger.warning(f"Symbol {symbol} not found in price data")
                                 else:
-                                    logger.warning(f"Symbol {symbol} not found in price data columns")
+                                    logger.warning("Unexpected price data format - no 'symbol' column or MultiIndex")
                         else:
                             logger.warning(f"No price data found for market_date {market_date}")
                 except Exception as e:
