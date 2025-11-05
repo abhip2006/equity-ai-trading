@@ -426,8 +426,12 @@ class ActiveTraderLLM:
             daily_liquidity = current_price * current_volume
 
             # Calculate ADR (Average Daily Range)
-            atr = daily_indicators.get('ATR_14_daily', 0.0)
-            adr_percent = (atr / current_price * 100) if current_price > 0 else 0.0
+            atr = daily_indicators.get('ATR_14_daily', None)
+            # Skip ADR check if ATR data is missing (don't penalize symbols for missing data)
+            if atr is not None and atr > 0:
+                adr_percent = (atr / current_price * 100) if current_price > 0 else 0.0
+            else:
+                adr_percent = None  # Signal that ADR data is unavailable
 
             # Apply filters
             passed = True
@@ -459,22 +463,27 @@ class ActiveTraderLLM:
                 if passed:
                     filter_stats['liquidity'] += 1
 
-            # Filter 5: ADR range
-            if passed and (adr_percent < min_adr or adr_percent > max_adr):
-                passed = False
+            # Filter 5: ADR range (skip if ATR data unavailable)
+            if passed and adr_percent is not None:
+                if adr_percent < min_adr or adr_percent > max_adr:
+                    passed = False
+                else:
+                    filter_stats['adr'] += 1
             else:
+                # ATR data missing, pass this filter automatically
                 if passed:
                     filter_stats['adr'] += 1
 
             if passed:
                 filter_stats['passed_all'] += 1
                 filtered_symbols.append(symbol)
+                adr_str = f"{adr_percent:.2f}%" if adr_percent is not None else "N/A"
                 logger.debug(
                     f"{symbol}: PASS - Vol ratio: {volume_ratio:.2f}x, "
                     f"Momentum: {momentum_5d:+.2f}%, "
                     f"From high: {distance_from_high:.2f}%, "
                     f"Liquidity: ${daily_liquidity/1e6:.1f}M, "
-                    f"ADR: {adr_percent:.2f}%"
+                    f"ADR: {adr_str}"
                 )
 
         logger.info(f"\nFilter Results:")
@@ -484,8 +493,14 @@ class ActiveTraderLLM:
         logger.info(f"  Passed liquidity (>${min_liquidity/1e6:.0f}M): {filter_stats['liquidity']}")
         logger.info(f"  Passed ADR ({min_adr}-{max_adr}%): {filter_stats['adr']}")
         logger.info(f"  PASSED ALL FILTERS: {filter_stats['passed_all']}")
-        logger.info(f"\nReduction: {len(analyst_outputs)} → {len(filtered_symbols)} symbols ({100*(1-len(filtered_symbols)/len(analyst_outputs)):.1f}% filtered)")
-        logger.info(f"API call savings: ~{len(analyst_outputs) - len(filtered_symbols)} calls avoided\n")
+
+        # Avoid division by zero when no analyst outputs
+        if len(analyst_outputs) > 0:
+            reduction_pct = 100*(1-len(filtered_symbols)/len(analyst_outputs))
+            logger.info(f"\nReduction: {len(analyst_outputs)} → {len(filtered_symbols)} symbols ({reduction_pct:.1f}% filtered)")
+            logger.info(f"API call savings: ~{len(analyst_outputs) - len(filtered_symbols)} calls avoided\n")
+        else:
+            logger.info(f"\nReduction: 0 → 0 symbols (no candidates to filter)\n")
 
         return filtered_symbols
 
@@ -635,16 +650,17 @@ class ActiveTraderLLM:
             for symbol, features in features_dict.items():
                 logger.info(f"\nPreparing data for {symbol}...")
 
-                # Validate critical data (price, ATR) - NO LLM call needed
+                # Validate critical data (price) - NO LLM call needed
                 price = features.close
                 atr = features.daily_indicators.get('ATR_14_daily')
 
                 if price is None or price == 0.0:
                     logger.warning(f"{symbol}: Price data missing or zero - skipping symbol")
                     continue
+
+                # ATR is useful but not critical - log warning if missing but don't skip
                 if atr is None:
-                    logger.warning(f"{symbol}: ATR data missing - skipping symbol")
-                    continue
+                    logger.debug(f"{symbol}: ATR data missing - proceeding without ATR")
 
                 # Extract price series from price_df for trader_agent (last 20 bars)
                 symbol_prices = price_df[price_df['symbol'] == symbol].tail(20)
@@ -701,16 +717,26 @@ class ActiveTraderLLM:
             batch_config = self.config.model_dump().get('batch_processing', {})
             filters = batch_config.get('filters', {})
 
-            filtered_symbols = self._apply_programmatic_filters(
-                analyst_outputs,
-                current_prices,
-                min_volume_ratio=filters.get('min_volume_ratio', 2.0),
-                min_momentum_5d=filters.get('min_momentum_5d', 2.0),
-                max_distance_from_high=filters.get('max_distance_from_high', 10.0),
-                min_liquidity=filters.get('min_liquidity', 500_000_000),
-                min_adr=filters.get('min_adr', 1.0),
-                max_adr=filters.get('max_adr', 15.0)
-            )
+            # Check if batch processing is enabled (for filtering)
+            batch_enabled = batch_config.get('enabled', False)
+
+            if batch_enabled:
+                # Apply programmatic filters if batch processing is enabled
+                filtered_symbols = self._apply_programmatic_filters(
+                    analyst_outputs,
+                    current_prices,
+                    min_volume_ratio=filters.get('min_volume_ratio', 2.0),
+                    min_momentum_5d=filters.get('min_momentum_5d', 2.0),
+                    max_distance_from_high=filters.get('max_distance_from_high', 10.0),
+                    min_liquidity=filters.get('min_liquidity', 500_000_000),
+                    min_adr=filters.get('min_adr', 1.0),
+                    max_adr=filters.get('max_adr', 15.0)
+                )
+            else:
+                # No filtering - let LLM evaluate all symbols
+                logger.info(f"\n=== PROGRAMMATIC FILTERING DISABLED ===")
+                logger.info(f"Batch processing disabled - LLM will evaluate all {len(analyst_outputs)} symbols")
+                filtered_symbols = list(analyst_outputs.keys())
 
             # Step 4b: Separate existing positions from new candidates
             symbols_with_positions = []
@@ -739,23 +765,6 @@ class ActiveTraderLLM:
                     open_positions = [p for p in portfolio_dict['open_positions'] if p['symbol'] == symbol]
                     if open_positions:
                         existing_position = open_positions[0]
-
-                        # OPTIMIZATION: Skip LLM review for positions with small moves (<5%)
-                        # This lets mechanical stops/targets do their work without LLM interference
-                        current_price = current_prices.get(symbol, 0.0)
-                        entry_price = existing_position.get('entry_price', 0.0)
-
-                        if entry_price > 0 and current_price > 0:
-                            unrealized_pnl_pct = abs(((current_price - entry_price) / entry_price) * 100)
-
-                            # Only ask LLM to review if position shows significant movement (>5%)
-                            # Otherwise, let mechanical systems handle it
-                            if unrealized_pnl_pct < 5.0:
-                                logger.debug(
-                                    f"{symbol}: Skipping LLM review - position at {unrealized_pnl_pct:.2f}% "
-                                    f"(auto-HOLD, let mechanical stops/targets work)"
-                                )
-                                continue  # Skip to next symbol
 
                 # Prepare all open positions for comparative analysis
                 all_open_positions_data = []
@@ -797,30 +806,9 @@ class ActiveTraderLLM:
                         # LLM decided to close existing position
                         logger.info(f"{symbol}: LLM decided to CLOSE position (invalidation triggered)")
 
-                        # VALIDATION: Prevent premature LLM closes
-                        if self.position_manager.has_open_position(symbol) and existing_position:
+                        # Execute the LLM's close decision
+                        if self.position_manager.has_open_position(symbol):
                             current_price = current_prices.get(symbol, 0.0)
-                            entry_price = existing_position.get('entry_price', 0.0)
-
-                            # Calculate unrealized P&L percentage
-                            if entry_price > 0:
-                                unrealized_pnl_pct = ((current_price - entry_price) / entry_price) * 100
-
-                                # Block premature closes if position shows only minor drawdown (<5%)
-                                if abs(unrealized_pnl_pct) < 5.0:
-                                    logger.warning(
-                                        f"{symbol}: LLM close BLOCKED - position only at {unrealized_pnl_pct:+.2f}% "
-                                        f"(need >5% move for LLM override). Let mechanical stops/targets handle this."
-                                    )
-                                    logger.info(f"{symbol}: Converting CLOSE to HOLD (blocked premature exit)")
-                                    continue  # Don't allow close, skip to next symbol
-
-                                # Allow LLM close - significant move detected (>5%)
-                                logger.info(
-                                    f"{symbol}: LLM close allowed - significant P&L change ({unrealized_pnl_pct:+.2f}%)"
-                                )
-
-                            # Execute the close
                             closed_pos = self.position_manager.close_position(
                                 symbol=symbol,
                                 exit_price=current_price,
