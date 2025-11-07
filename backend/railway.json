@@ -5,7 +5,7 @@
     "buildCommand": "pip install -r ../requirements.txt"
   },
   "deploy": {
-    "startCommand": "cd backend && PYTHONPATH=/app:$PYTHONPATH python -m uvicorn main:app --host 0.0.0.0 --port $PORT --log-level info",
+    "startCommand": "PYTHONPATH=/app:$PYTHONPATH uvicorn main:app --host 0.0.0.0 --port $PORT --log-level info",
     "restartPolicyType": "ALWAYS",
     "restartPolicyMaxRetries": 10,
     "healthcheckPath": "/",
