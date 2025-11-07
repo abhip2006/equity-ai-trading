@@ -42,6 +42,8 @@ sqlalchemy>=2.0.25
 pytz>=2024.1
 
 # ===================================
-# Optional: Technical Indicators
+# Technical Indicators
 # ===================================
-# tradingview-indicators>=1.0.0  # May not be available, commenting out
+# Note: If tradingview-indicators fails to install, the app will still work
+# but technical indicator features will be disabled
+tradingview-indicators>=1.0.0
